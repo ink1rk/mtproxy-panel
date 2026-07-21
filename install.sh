@@ -50,6 +50,8 @@ as_root() {
 # 1. Установка Python, если отсутствует
 # ---------------------------------------------------------------------------
 ensure_python() {
+    local need_install=0
+
     if command -v python3 >/dev/null 2>&1; then
         local version major minor
         version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
@@ -57,15 +59,49 @@ ensure_python() {
         minor="${version##*.}"
         if (( major > PYTHON_MIN_MAJOR || (major == PYTHON_MIN_MAJOR && minor >= PYTHON_MIN_MINOR) )); then
             log "Python ${version} уже установлен."
-            return
+        else
+            log "Найден Python ${version}, требуется >= ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}."
+            need_install=1
         fi
-        log "Найден Python ${version}, требуется >= ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}. Обновляю."
     else
-        log "Python3 не найден. Устанавливаю."
+        log "Python3 не найден."
+        need_install=1
     fi
 
+    # На минимальных образах Ubuntu python3 может быть предустановлен,
+    # но пакет с модулем venv (python3-venv / python3.X-venv) — нет.
+    # Поэтому проверяем venv отдельно, независимо от версии Python.
+    if ! python3 -m venv --help >/dev/null 2>&1; then
+        log "Модуль 'venv' недоступен для текущего python3."
+        need_install=1
+    fi
+
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+        log "Модуль 'pip' недоступен для текущего python3."
+        need_install=1
+    fi
+
+    if (( need_install == 0 )); then
+        return
+    fi
+
+    log "Устанавливаю python3, python3-venv, python3-pip."
     as_root apt-get update -y
+
+    local py_minor_pkg="python3.$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo '')"
+
+    # Ставим и универсальные, и версионные пакеты (например python3.12-venv),
+    # т.к. на разных релизах Ubuntu имя пакета для venv отличается.
+    # apt-get install игнорирует не найденные версионные имена мягко только
+    # если явно допустить ошибку -- поэтому пробуем по отдельности.
     as_root apt-get install -y python3 python3-venv python3-pip
+    if [[ -n "${py_minor_pkg}" && "${py_minor_pkg}" != "python3." ]]; then
+        as_root apt-get install -y "${py_minor_pkg}-venv" 2>/dev/null || true
+    fi
+
+    if ! python3 -m venv --help >/dev/null 2>&1; then
+        fail "Не удалось установить рабочий модуль venv для python3. Установите вручную: apt install python3-venv (или python3.X-venv) и запустите install.sh снова."
+    fi
 }
 
 # ---------------------------------------------------------------------------
