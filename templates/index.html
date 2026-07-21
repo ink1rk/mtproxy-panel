@@ -1,97 +1,357 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MTProxy Control Panel</title>
-    <link
-        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-        rel="stylesheet"
-    >
-</head>
-<body class="bg-light">
-<div class="container py-4">
+{% extends "base.html" %}
+{% block title %}MTProxy Control Panel{% endblock %}
+{% block body %}
 
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h1 class="h3 mb-0">MTProxy Control Panel</h1>
-        <form method="post" action="/proxies">
-            <button type="submit" class="btn btn-primary">+ Создать прокси</button>
-        </form>
+<nav class="navbar navbar-expand border-bottom" style="border-color: var(--border-soft) !important;">
+    <div class="container-fluid px-4">
+        <span class="navbar-brand navbar-brand-panel">
+            <i class="bi bi-router"></i> MTProxy Control Panel
+        </span>
+        <div class="d-flex align-items-center gap-2">
+            <span class="text-secondary small d-none d-sm-inline">
+                <i class="bi bi-person-circle"></i> {{ username }}
+            </span>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#passwordModal">
+                <i class="bi bi-key"></i> Пароль
+            </button>
+            <form method="post" action="/logout" class="d-inline">
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-box-arrow-right"></i> Выйти
+                </button>
+            </form>
+        </div>
+    </div>
+</nav>
+
+<div class="container-fluid px-4 py-4">
+
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-md-3">
+            <div class="stat-card">
+                <div class="stat-value">{{ total_count }}</div>
+                <div class="stat-label">Всего прокси</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="stat-card">
+                <div class="stat-value text-success">{{ running_count }}</div>
+                <div class="stat-label">Запущено</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="stat-card">
+                <div class="stat-value text-warning">{{ total_count - running_count }}</div>
+                <div class="stat-label">Проблемные</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 d-flex align-items-stretch">
+            <button type="button" class="btn brand-gradient-btn text-white w-100 d-flex align-items-center justify-content-center gap-2"
+                    data-bs-toggle="modal" data-bs-target="#createModal">
+                <i class="bi bi-plus-circle"></i> Создать прокси
+            </button>
+        </div>
     </div>
 
-    {% if error_message %}
-    <div class="alert alert-danger" role="alert">
-        {{ error_message }}
+    <div class="d-flex align-items-center mb-3">
+        <div class="input-group" style="max-width: 320px;">
+            <span class="input-group-text bg-transparent border-secondary-subtle"><i class="bi bi-search"></i></span>
+            <input type="text" id="searchInput" class="form-control" placeholder="Поиск по имени, IP, порту...">
+        </div>
     </div>
-    {% endif %}
 
     {% if proxies|length == 0 %}
-    <div class="alert alert-secondary">
-        Прокси пока не созданы. Нажмите «Создать прокси», чтобы добавить первый.
+    <div class="card-surface p-5 text-center text-secondary">
+        <i class="bi bi-inboxes" style="font-size: 2rem;"></i>
+        <p class="mb-0 mt-2">Прокси пока не созданы. Нажмите «Создать прокси», чтобы добавить первый.</p>
     </div>
     {% else %}
-    <div class="table-responsive">
-        <table class="table table-bordered table-hover align-middle bg-white">
-            <thead class="table-dark">
-                <tr>
-                    <th>Статус</th>
-                    <th>Контейнер</th>
-                    <th>IP</th>
-                    <th>Порт</th>
-                    <th>Secret</th>
-                    <th>Создан</th>
-                    <th>tg://</th>
-                    <th>https://</th>
-                    <th>QR</th>
-                    <th>Действия</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for proxy in proxies %}
-                <tr>
-                    <td>
-                        {% if proxy.status == "running" %}
-                        <span class="badge bg-success">running</span>
-                        {% elif proxy.status == "missing" %}
-                        <span class="badge bg-danger">missing</span>
-                        {% else %}
-                        <span class="badge bg-warning text-dark">{{ proxy.status }}</span>
-                        {% endif %}
-                    </td>
-                    <td><code>{{ proxy.container_name }}</code></td>
-                    <td>{{ proxy.ip }}</td>
-                    <td>{{ proxy.port }}</td>
-                    <td>
-                        <code class="text-break">{{ proxy.secret }}</code>
-                    </td>
-                    <td>{{ proxy.created_at }}</td>
-                    <td>
-                        <a href="{{ proxy.tg_link }}" class="btn btn-sm btn-outline-primary">
-                            Открыть
-                        </a>
-                    </td>
-                    <td>
-                        <a href="{{ proxy.https_link }}" target="_blank"
-                           class="btn btn-sm btn-outline-secondary">
-                            Открыть
-                        </a>
-                    </td>
-                    <td>
-                        <img src="{{ proxy.qr_url }}" alt="QR" width="80" height="80">
-                    </td>
-                    <td>
-                        <form method="post" action="/proxies/{{ proxy.id }}/delete"
-                              onsubmit="return confirm('Удалить прокси {{ proxy.container_name }}? Действие необратимо.');">
-                            <button type="submit" class="btn btn-sm btn-danger">Удалить</button>
-                        </form>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="card-surface p-0">
+        <div class="table-responsive">
+            <table class="table table-modern mb-0" id="proxyTable">
+                <thead>
+                    <tr>
+                        <th data-sort="status">Статус</th>
+                        <th data-sort="name">Контейнер</th>
+                        <th data-sort="addr">IP : Порт</th>
+                        <th>Secret</th>
+                        <th data-sort="created">Создан</th>
+                        <th>Ссылки</th>
+                        <th>QR</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for proxy in proxies %}
+                    <tr data-id="{{ proxy.id }}"
+                        data-search="{{ proxy.container_name }} {{ proxy.ip }} {{ proxy.port }}"
+                        data-status="{{ proxy.status }}"
+                        data-name="{{ proxy.container_name }}"
+                        data-addr="{{ proxy.ip }}:{{ '%05d' % proxy.port }}"
+                        data-created="{{ proxy.created_at }}">
+                        <td>
+                            <span class="badge badge-status
+                                {% if proxy.status == 'running' %}text-bg-success
+                                {% elif proxy.status == 'missing' %}text-bg-danger
+                                {% else %}text-bg-warning{% endif %}"
+                                data-status-badge>
+                                {{ proxy.status }}
+                            </span>
+                        </td>
+                        <td>
+                            <div class="mono">{{ proxy.container_name }}</div>
+                        </td>
+                        <td class="mono">{{ proxy.ip }}:{{ proxy.port }}</td>
+                        <td>
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge text-bg-secondary">{{ proxy.secret_mode_label }}</span>
+                                <code class="mono text-truncate" style="max-width: 160px;" title="{{ proxy.secret }}">{{ proxy.secret }}</code>
+                                <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ proxy.secret }}" title="Скопировать secret"></i>
+                            </div>
+                            {% if proxy.tls_domain %}
+                            <div class="text-secondary small mt-1">домен: {{ proxy.tls_domain }}</div>
+                            {% endif %}
+                        </td>
+                        <td class="text-secondary small">{{ proxy.created_at[:19].replace("T", " ") }}</td>
+                        <td>
+                            <div class="d-flex gap-2">
+                                <a href="{{ proxy.tg_link }}" class="btn btn-sm btn-outline-primary" title="Открыть в Telegram">
+                                    <i class="bi bi-telegram"></i>
+                                </a>
+                                <i class="bi bi-link-45deg copy-btn btn btn-sm btn-outline-secondary d-flex align-items-center"
+                                   data-copy="{{ proxy.https_link }}" title="Скопировать https-ссылку"></i>
+                            </div>
+                        </td>
+                        <td>
+                            <img src="{{ proxy.qr_url }}" alt="QR" width="64" height="64" class="qr-thumb">
+                        </td>
+                        <td>
+                            <button type="button" class="btn btn-sm btn-outline-danger"
+                                    data-bs-toggle="modal" data-bs-target="#deleteModal"
+                                    data-delete-id="{{ proxy.id }}" data-delete-name="{{ proxy.container_name }}">
+                                <i class="bi bi-trash3"></i>
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
     {% endif %}
-
 </div>
-</body>
-</html>
+
+<!-- Модалка: создать прокси -->
+<div class="modal fade" id="createModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form method="post" action="/proxies" class="modal-content card-surface">
+            <div class="modal-header border-secondary-subtle">
+                <h5 class="modal-title">Новый MTProxy</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+
+                <label class="form-label small text-secondary">Порт</label>
+                <div class="mb-2">
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="port_mode" id="portRandom" value="random" checked>
+                        <label class="form-check-label" for="portRandom">Случайный</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="port_mode" id="portManual" value="manual">
+                        <label class="form-check-label" for="portManual">Указать вручную</label>
+                    </div>
+                </div>
+                <input type="number" name="manual_port" id="manualPortInput" class="form-control mb-3"
+                       placeholder="Например, 8443" min="1" max="65535" disabled>
+
+                <label class="form-label small text-secondary">Режим secret</label>
+                <select name="secret_mode" id="secretModeSelect" class="form-select mb-2">
+                    {% for mode in valid_secret_modes %}
+                    <option value="{{ mode }}">
+                        {% if mode == "classic" %}Обычный (classic)
+                        {% elif mode == "dd" %}dd — рандомный паддинг (anti-DPI)
+                        {% elif mode == "ee" %}ee — fake-TLS под домен{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+                <input type="text" name="tls_domain" id="tlsDomainInput" class="form-control"
+                       placeholder="например, www.google.com" value="{{ default_tls_domain }}" disabled>
+                <div class="form-text">Домен нужен только для режима 'ee' (fake-TLS маскировка).</div>
+            </div>
+            <div class="modal-footer border-secondary-subtle">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="submit" class="btn brand-gradient-btn text-white">Создать</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Модалка: подтверждение удаления -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form method="post" id="deleteForm" class="modal-content card-surface">
+            <div class="modal-header border-secondary-subtle">
+                <h5 class="modal-title">Удалить прокси?</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                Контейнер <strong id="deleteProxyName"></strong> и все его данные (secret, QR) будут удалены безвозвратно.
+            </div>
+            <div class="modal-footer border-secondary-subtle">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="submit" class="btn btn-danger">Удалить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Модалка: смена пароля -->
+<div class="modal fade" id="passwordModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form method="post" action="/account/password" class="modal-content card-surface">
+            <div class="modal-header border-secondary-subtle">
+                <h5 class="modal-title">Сменить пароль</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label small text-secondary">Текущий пароль</label>
+                <input type="password" name="current_password" class="form-control mb-3" required>
+                <label class="form-label small text-secondary">Новый пароль</label>
+                <input type="password" name="new_password" class="form-control mb-3" required minlength="8">
+                <label class="form-label small text-secondary">Повторите новый пароль</label>
+                <input type="password" name="confirm_password" class="form-control" required minlength="8">
+            </div>
+            <div class="modal-footer border-secondary-subtle">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="submit" class="btn brand-gradient-btn text-white">Сохранить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Toasts -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+    {% if error_message %}
+    <div class="toast align-items-center text-bg-danger border-0 show" role="alert">
+        <div class="d-flex">
+            <div class="toast-body">{{ error_message }}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    </div>
+    {% endif %}
+    {% if info_message %}
+    <div class="toast align-items-center text-bg-success border-0 show" role="alert">
+        <div class="d-flex">
+            <div class="toast-body">{{ info_message }}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    // --- Переключение поля ручного порта ---
+    const portRandom = document.getElementById('portRandom');
+    const portManual = document.getElementById('portManual');
+    const manualPortInput = document.getElementById('manualPortInput');
+    function syncPortInput() {
+        manualPortInput.disabled = !portManual.checked;
+        manualPortInput.required = portManual.checked;
+    }
+    if (portRandom) {
+        portRandom.addEventListener('change', syncPortInput);
+        portManual.addEventListener('change', syncPortInput);
+    }
+
+    // --- Переключение поля домена для fake-TLS ---
+    const secretModeSelect = document.getElementById('secretModeSelect');
+    const tlsDomainInput = document.getElementById('tlsDomainInput');
+    function syncDomainInput() {
+        const isEe = secretModeSelect.value === 'ee';
+        tlsDomainInput.disabled = !isEe;
+        tlsDomainInput.required = isEe;
+    }
+    if (secretModeSelect) {
+        secretModeSelect.addEventListener('change', syncDomainInput);
+        syncDomainInput();
+    }
+
+    // --- Модалка удаления: подставляем id/имя контейнера ---
+    const deleteModal = document.getElementById('deleteModal');
+    if (deleteModal) {
+        deleteModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            const id = button.getAttribute('data-delete-id');
+            const name = button.getAttribute('data-delete-name');
+            document.getElementById('deleteProxyName').textContent = name;
+            document.getElementById('deleteForm').setAttribute('action', '/proxies/' + id + '/delete');
+        });
+    }
+
+    // --- Копирование в буфер обмена ---
+    document.querySelectorAll('.copy-btn').forEach(function (el) {
+        el.addEventListener('click', function () {
+            const text = el.getAttribute('data-copy');
+            navigator.clipboard.writeText(text).then(function () {
+                const original = el.className;
+                el.classList.remove('bi-clipboard', 'bi-link-45deg');
+                el.classList.add('bi-check2', 'text-success');
+                setTimeout(function () { el.className = original; }, 1200);
+            });
+        });
+    });
+
+    // --- Поиск по таблице ---
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) {
+        searchInput.addEventListener('input', function () {
+            const query = searchInput.value.trim().toLowerCase();
+            document.querySelectorAll('#proxyTable tbody tr').forEach(function (row) {
+                const haystack = (row.getAttribute('data-search') || '').toLowerCase();
+                row.style.display = haystack.includes(query) ? '' : 'none';
+            });
+        });
+    }
+
+    // --- Сортировка по клику на заголовок ---
+    document.querySelectorAll('#proxyTable thead th[data-sort]').forEach(function (th) {
+        let ascending = true;
+        th.addEventListener('click', function () {
+            const key = th.getAttribute('data-sort');
+            const tbody = document.querySelector('#proxyTable tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            rows.sort(function (a, b) {
+                const av = a.getAttribute('data-' + key) || '';
+                const bv = b.getAttribute('data-' + key) || '';
+                return ascending ? av.localeCompare(bv) : bv.localeCompare(av);
+            });
+            rows.forEach(function (row) { tbody.appendChild(row); });
+            ascending = !ascending;
+        });
+    });
+
+    // --- Автообновление статусов без перезагрузки страницы ---
+    function refreshStatuses() {
+        fetch('/api/status', { credentials: 'same-origin' })
+            .then(function (response) { return response.ok ? response.json() : null; })
+            .then(function (data) {
+                if (!data) return;
+                data.proxies.forEach(function (proxy) {
+                    const row = document.querySelector('tr[data-id="' + proxy.id + '"]');
+                    if (!row) return;
+                    row.setAttribute('data-status', proxy.status);
+                    const badge = row.querySelector('[data-status-badge]');
+                    if (!badge) return;
+                    badge.textContent = proxy.status;
+                    badge.className = 'badge badge-status ' + (
+                        proxy.status === 'running' ? 'text-bg-success' :
+                        proxy.status === 'missing' ? 'text-bg-danger' : 'text-bg-warning'
+                    );
+                });
+            })
+            .catch(function () { /* тихо игнорируем сетевые сбои опроса */ });
+    }
+    setInterval(refreshStatuses, 6000);
+</script>
+{% endblock %}

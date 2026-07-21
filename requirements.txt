@@ -6,3 +6,4 @@ docker==7.1.0
 qrcode==8.0
 pillow==11.1.0
 python-multipart==0.0.20
+itsdangerous==2.2.0

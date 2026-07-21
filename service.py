@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 
+import config
 import utils
 from docker_manager import DockerManager, DockerUnavailableError
 from mtproxy import MTProxyCreationError, MTProxyProvisioner
@@ -48,13 +49,23 @@ class ProxyService:
             refreshed.append(proxy)
         return refreshed
 
-    def create_proxy(self) -> Proxy:
+    def create_proxy(
+        self,
+        *,
+        desired_port: int | None = None,
+        secret_mode: str = config.SECRET_MODE_CLASSIC,
+        tls_domain: str | None = None,
+    ) -> Proxy:
         """
         Полный цикл создания прокси: провижининг контейнера,
         генерация QR, сохранение в БД. При любой ошибке — чистый откат.
         """
         try:
-            provisioned = self._provisioner.provision()
+            provisioned = self._provisioner.provision(
+                desired_port=desired_port,
+                secret_mode=secret_mode,
+                tls_domain=tls_domain,
+            )
         except MTProxyCreationError as exc:
             raise ProxyServiceError(str(exc)) from exc
 
@@ -71,7 +82,10 @@ class ProxyService:
                 container_name=provisioned.container_name,
                 ip=provisioned.ip,
                 port=provisioned.port,
-                secret=provisioned.secret,
+                secret=provisioned.link_secret,
+                container_secret=provisioned.container_secret,
+                secret_mode=provisioned.secret_mode,
+                tls_domain=provisioned.tls_domain,
                 tg_link=provisioned.tg_link,
                 https_link=provisioned.https_link,
                 qr_filename=qr_filename,

@@ -30,6 +30,9 @@ def _row_to_proxy(row: sqlite3.Row) -> Proxy:
         ip=row["ip"],
         port=row["port"],
         secret=row["secret"],
+        container_secret=row["container_secret"],
+        secret_mode=row["secret_mode"],
+        tls_domain=row["tls_domain"],
         tg_link=row["tg_link"],
         https_link=row["https_link"],
         qr_filename=row["qr_filename"],
@@ -48,6 +51,9 @@ class ProxyRepository:
         ip: str,
         port: int,
         secret: str,
+        container_secret: str,
+        secret_mode: str,
+        tls_domain: str | None,
         tg_link: str,
         https_link: str,
         qr_filename: str,
@@ -59,15 +65,19 @@ class ProxyRepository:
                 cursor = connection.execute(
                     f"""
                     INSERT INTO {config.PROXIES_TABLE_NAME}
-                        (container_name, ip, port, secret, tg_link,
-                         https_link, qr_filename, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (container_name, ip, port, secret, container_secret,
+                         secret_mode, tls_domain, tg_link, https_link,
+                         qr_filename, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         container_name,
                         ip,
                         port,
                         secret,
+                        container_secret,
+                        secret_mode,
+                        tls_domain,
                         tg_link,
                         https_link,
                         qr_filename,
@@ -87,6 +97,9 @@ class ProxyRepository:
             ip=ip,
             port=port,
             secret=secret,
+            container_secret=container_secret,
+            secret_mode=secret_mode,
+            tls_domain=tls_domain,
             tg_link=tg_link,
             https_link=https_link,
             qr_filename=qr_filename,

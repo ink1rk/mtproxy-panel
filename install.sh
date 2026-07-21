@@ -207,7 +207,9 @@ wait_for_healthcheck() {
     log "Ожидаю ответа сервиса на ${HEALTHCHECK_URL} (до ${HEALTHCHECK_TIMEOUT_SECONDS}с)."
     local waited=0
     while (( waited < HEALTHCHECK_TIMEOUT_SECONDS )); do
-        if curl -fsS -o /tmp/mtproxy_healthcheck.html -w '%{http_code}' \
+        # -L: панель теперь требует авторизацию и редиректит "/" -> "/login",
+        # поэтому проверяем именно конечную страницу, куда попадёт браузер.
+        if curl -fsSL -o /tmp/mtproxy_healthcheck.html -w '%{http_code}' \
             "${HEALTHCHECK_URL}" 2>/dev/null | grep -q '^200$'; then
             if grep -qi '<html' /tmp/mtproxy_healthcheck.html; then
                 log "Сервис отвечает HTTP 200 и отдаёт HTML. Установка успешна."
@@ -251,6 +253,12 @@ main() {
     log "==============================================================="
     log " MTProxy Control Panel установлена и запущена."
     log " Откройте в браузере: http://<IP_ЭТОГО_СЕРВЕРА>:${APP_PORT}/"
+    if grep -q "СОЗДАНА ПЕРВАЯ УЧЁТНАЯ ЗАПИСЬ" "${APP_LOG}" 2>/dev/null; then
+        log " Учётные данные администратора (показываются один раз):"
+        grep -A 3 "Логин:" "${APP_LOG}" | tail -n 3 | sed 's/^/   /'
+    else
+        log " Учётная запись администратора уже существует (пароль не менялся)."
+    fi
     log " Логи приложения: ${APP_LOG}"
     log " PID процесса:    $(cat "${PID_FILE}")"
     log " Остановить:      kill \$(cat ${PID_FILE})"

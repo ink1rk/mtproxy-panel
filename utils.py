@@ -61,8 +61,72 @@ def find_free_port(
 
 
 def generate_secret() -> str:
-    """Генерирует криптостойкий секрет MTProxy (32 hex-символа)."""
+    """Генерирует криптостойкий базовый секрет MTProxy (32 hex-символа)."""
     return secrets.token_hex(config.SECRET_LENGTH_BYTES)
+
+
+class InvalidTlsDomainError(ValueError):
+    """Указанный домен для fake-TLS некорректен."""
+
+
+class PortUnavailableError(RuntimeError):
+    """Запрошенный пользователем порт занят или вне допустимого диапазона."""
+
+
+def _domain_to_hex(domain: str) -> str:
+    """Кодирует доменное имя в hex для встраивания в fake-TLS secret."""
+    cleaned = domain.strip().lower()
+    if not cleaned or len(cleaned) > 253:
+        raise InvalidTlsDomainError("Некорректное доменное имя для fake-TLS")
+    for label in cleaned.split("."):
+        if not label or not all(ch.isalnum() or ch == "-" for ch in label):
+            raise InvalidTlsDomainError(f"Некорректная часть домена: '{label}'")
+    return cleaned.encode("ascii").hex()
+
+
+def build_container_secret(base_secret: str, mode: str, tls_domain: str | None) -> str:
+    """
+    Строит secret, который будет передан в SECRET контейнера Docker.
+
+    - classic: обычный 32-символьный hex-секрет без изменений.
+    - dd: базовый секрет без изменений — режим 'dd' (random padding)
+      определяется клиентом по префиксу secret'а в самой ссылке,
+      серверу передаётся тот же базовый секрет.
+    - ee: fake-TLS — контейнеру передаётся секрет вида
+      'ee' + 32 hex символа + hex-encoded домен, как того требует
+      официальный образ telegrammessenger/proxy.
+    """
+    if mode == config.SECRET_MODE_EE:
+        if not tls_domain:
+            raise InvalidTlsDomainError("Для режима 'ee' обязателен домен для fake-TLS")
+        return f"ee{base_secret}{_domain_to_hex(tls_domain)}"
+    return base_secret
+
+
+def build_link_secret(base_secret: str, mode: str, tls_domain: str | None) -> str:
+    """
+    Строит secret, который будет показан пользователю в tg://, https:// ссылках и QR.
+    """
+    if mode == config.SECRET_MODE_DD:
+        return f"dd{base_secret}"
+    if mode == config.SECRET_MODE_EE:
+        return build_container_secret(base_secret, mode, tls_domain)
+    return base_secret
+
+
+def validate_manual_port(port: int) -> int:
+    """
+    Проверяет, что запрошенный пользователем порт находится в допустимом
+    диапазоне и свободен прямо сейчас. Бросает PortUnavailableError иначе.
+    """
+    if not (config.MIN_VALID_PORT <= port <= config.MAX_VALID_PORT):
+        raise PortUnavailableError(
+            f"Порт {port} вне допустимого диапазона "
+            f"{config.MIN_VALID_PORT}-{config.MAX_VALID_PORT}"
+        )
+    if not is_port_free(port):
+        raise PortUnavailableError(f"Порт {port} уже занят")
+    return port
 
 
 def generate_container_name() -> str:

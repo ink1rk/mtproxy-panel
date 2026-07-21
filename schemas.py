@@ -16,6 +16,8 @@ class ProxyOut(BaseModel):
     ip: str
     port: int = Field(ge=1, le=65535)
     secret: str
+    secret_mode: str
+    tls_domain: str | None
     tg_link: str
     https_link: str
     qr_url: str

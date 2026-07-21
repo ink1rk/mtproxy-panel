@@ -2,8 +2,10 @@
 Оркестрация жизненного цикла MTProxy-контейнера.
 
 Алгоритм создания (строго по шагам, с откатом на любой ошибке):
-  1. Найти свободный TCP-порт.
-  2. Сгенерировать криптостойкий secret.
+  1. Определить порт: либо проверить и занять запрошенный пользователем,
+     либо найти свободный TCP-порт автоматически.
+  2. Сгенерировать криптостойкий базовый secret и, если нужно, построить
+     его варианты для контейнера (dd/ee) и для клиентских ссылок.
   3. Создать Docker-контейнер.
   4. Дождаться запуска.
   5. Проверить container.status == "running".
@@ -38,7 +40,10 @@ class ProvisionedProxy:
     container_name: str
     ip: str
     port: int
-    secret: str
+    link_secret: str
+    container_secret: str
+    secret_mode: str
+    tls_domain: str | None
     tg_link: str
     https_link: str
 
@@ -49,7 +54,16 @@ class MTProxyProvisioner:
     def __init__(self, docker_manager: DockerManager) -> None:
         self._docker = docker_manager
 
-    def provision(self) -> ProvisionedProxy:
+    def provision(
+        self,
+        *,
+        desired_port: int | None = None,
+        secret_mode: str = config.SECRET_MODE_CLASSIC,
+        tls_domain: str | None = None,
+    ) -> ProvisionedProxy:
+        if secret_mode not in config.VALID_SECRET_MODES:
+            raise MTProxyCreationError(f"Неизвестный режим секрета: '{secret_mode}'")
+
         container_name = utils.generate_container_name()
         logger.info("Начинаю провижининг прокси '%s'", container_name)
 
@@ -59,21 +73,29 @@ class MTProxyProvisioner:
         except ContainerRemovalTimeoutError as exc:
             raise MTProxyCreationError(str(exc)) from exc
 
-        # Шаг 1: свободный порт.
+        # Шаг 1: порт — либо запрошенный пользователем (с проверкой), либо случайный.
         try:
-            port = utils.find_free_port()
-        except utils.NoFreePortError as exc:
+            if desired_port is not None:
+                port = utils.validate_manual_port(desired_port)
+            else:
+                port = utils.find_free_port()
+        except (utils.NoFreePortError, utils.PortUnavailableError) as exc:
             raise MTProxyCreationError(str(exc)) from exc
 
-        # Шаг 2: криптостойкий secret.
-        secret = utils.generate_secret()
+        # Шаг 2: секрет и его варианты для контейнера/ссылок.
+        base_secret = utils.generate_secret()
+        try:
+            container_secret = utils.build_container_secret(base_secret, secret_mode, tls_domain)
+            link_secret = utils.build_link_secret(base_secret, secret_mode, tls_domain)
+        except utils.InvalidTlsDomainError as exc:
+            raise MTProxyCreationError(str(exc)) from exc
 
         # Шаг 3: создание контейнера.
         try:
             container = self._docker.create_mtproxy_container(
                 container_name=container_name,
                 host_port=port,
-                secret=secret,
+                secret=container_secret,
             )
         except Exception as exc:
             logger.error("Не удалось создать контейнер '%s': %s", container_name, exc)
@@ -88,7 +110,8 @@ class MTProxyProvisioner:
             logger.error("Контейнер '%s' не перешёл в статус running", container_name)
             self._safe_cleanup(container_name)
             raise MTProxyCreationError(
-                "Контейнер не запустился (статус не 'running') за отведённое время"
+                "Контейнер не запустился (статус не 'running') за отведённое время. "
+                "Если использовался режим 'ee', проверьте корректность домена."
             )
 
         # Шаг 6: определяем публичный IP и проверяем открытие порта.
@@ -117,15 +140,21 @@ class MTProxyProvisioner:
                 "Контейнер не отвечает на подключения — состояние откачено"
             )
 
-        tg_link = utils.build_tg_link(ip, port, secret)
-        https_link = utils.build_https_link(ip, port, secret)
+        tg_link = utils.build_tg_link(ip, port, link_secret)
+        https_link = utils.build_https_link(ip, port, link_secret)
 
-        logger.info("Прокси '%s' успешно провижинирован на порту %d", container_name, port)
+        logger.info(
+            "Прокси '%s' успешно провижинирован на порту %d (режим секрета: %s)",
+            container_name, port, secret_mode,
+        )
         return ProvisionedProxy(
             container_name=container_name,
             ip=ip,
             port=port,
-            secret=secret,
+            link_secret=link_secret,
+            container_secret=container_secret,
+            secret_mode=secret_mode,
+            tls_domain=tls_domain if secret_mode == config.SECRET_MODE_EE else None,
             tg_link=tg_link,
             https_link=https_link,
         )
