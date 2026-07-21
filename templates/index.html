@@ -26,6 +26,8 @@
 <div class="container-fluid px-4 py-4">
 
     <div class="row g-3 mb-4">
+        {% set total_count = total_count | default(proxies | length, true) %}
+        {% set running_count = running_count | default(0, true) %}
         <div class="col-6 col-md-3">
             <div class="stat-card">
                 <div class="stat-value">{{ total_count }}</div>
