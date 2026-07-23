@@ -153,32 +153,27 @@
             <div class="modal-body">
 
                 <label class="form-label small text-secondary">Порт</label>
-                <div class="mb-2">
-                    <div class="form-check form-check-inline">
-                        <input class="form-check-input" type="radio" name="port_mode" id="portRandom" value="random" checked>
-                        <label class="form-check-label" for="portRandom">Случайный</label>
-                    </div>
-                    <div class="form-check form-check-inline">
-                        <input class="form-check-input" type="radio" name="port_mode" id="portManual" value="manual">
-                        <label class="form-check-label" for="portManual">Указать вручную</label>
-                    </div>
-                </div>
-                <input type="number" name="manual_port" id="manualPortInput" class="form-control mb-3"
-                       placeholder="Например, 8443" min="1" max="65535">
-                <div class="form-text mb-3" id="manualPortHint">
-                    Заполняется, только если выбрано «Указать вручную» выше.
+                <input type="number" name="manual_port" id="manualPortInput" class="form-control mb-1"
+                       placeholder="Оставьте пустым для случайного порта" min="1" max="65535">
+                <div class="form-text mb-3">
+                    Если оставить пустым — панель подберёт свободный порт автоматически.
+                    Чтобы задать порт вручную (например, 8443), просто впишите его сюда.
                 </div>
 
                 <label class="form-label small text-secondary">Режим secret</label>
-                <select name="secret_mode" id="secretModeSelect" class="form-select mb-2">
+                <div class="mb-2">
                     {% for mode in valid_secret_modes %}
-                    <option value="{{ mode }}">
-                        {% if mode == "classic" %}Обычный (classic)
-                        {% elif mode == "dd" %}dd — рандомный паддинг (anti-DPI)
-                        {% elif mode == "ee" %}ee — fake-TLS под домен{% endif %}
-                    </option>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="secret_mode"
+                               id="secretMode_{{ mode }}" value="{{ mode }}" {% if mode == "classic" %}checked{% endif %}>
+                        <label class="form-check-label" for="secretMode_{{ mode }}">
+                            {% if mode == "classic" %}Обычный (classic)
+                            {% elif mode == "dd" %}dd — рандомный паддинг (anti-DPI)
+                            {% elif mode == "ee" %}ee — fake-TLS под домен{% endif %}
+                        </label>
+                    </div>
                     {% endfor %}
-                </select>
+                </div>
                 <input type="text" name="tls_domain" id="tlsDomainInput" class="form-control"
                        placeholder="например, www.google.com" value="{{ default_tls_domain }}">
                 <div class="form-text">Используется, только если выбран режим 'ee' (fake-TLS маскировка).</div>
@@ -256,42 +251,20 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // --- Переключение поля ручного порта ---
-    const portRandom = document.getElementById('portRandom');
-    const portManual = document.getElementById('portManual');
-    const manualPortInput = document.getElementById('manualPortInput');
-    function syncPortInput() {
-        const isManual = portManual.checked;
-        manualPortInput.required = isManual;
-        manualPortInput.classList.toggle('opacity-50', !isManual);
-        // Поле НЕ блокируется (disabled), чтобы его значение гарантированно
-        // доходило до сервера при любых сбоях JS — сервер сам игнорирует
-        // его, если port_mode == "random".
-    }
-    if (portRandom) {
-        portRandom.addEventListener('change', syncPortInput);
-        portManual.addEventListener('change', syncPortInput);
-        // Если пользователь начинает печатать в поле порта, сразу переключаем
-        // радиокнопку на "вручную" — так пользователю не нужно помнить, что
-        // сначала нужно выбрать переключатель.
-        manualPortInput.addEventListener('focus', function () {
-            portManual.checked = true;
-            syncPortInput();
-        });
-        syncPortInput();
-    }
-
     // --- Переключение поля домена для fake-TLS ---
-    const secretModeSelect = document.getElementById('secretModeSelect');
+    const secretModeRadios = document.querySelectorAll('input[name="secret_mode"]');
     const tlsDomainInput = document.getElementById('tlsDomainInput');
     function syncDomainInput() {
-        const isEe = secretModeSelect.value === 'ee';
+        const checked = document.querySelector('input[name="secret_mode"]:checked');
+        const isEe = !!checked && checked.value === 'ee';
         tlsDomainInput.required = isEe;
         tlsDomainInput.classList.toggle('opacity-50', !isEe);
         // Поле НЕ блокируется (disabled) по той же причине, что и порт.
     }
-    if (secretModeSelect) {
-        secretModeSelect.addEventListener('change', syncDomainInput);
+    if (secretModeRadios.length > 0) {
+        secretModeRadios.forEach(function (radio) {
+            radio.addEventListener('change', syncDomainInput);
+        });
         syncDomainInput();
     }
 

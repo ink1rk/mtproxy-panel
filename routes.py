@@ -166,7 +166,6 @@ async def api_status(request: Request) -> JSONResponse:
 @router.post("/proxies", response_class=RedirectResponse)
 async def create_proxy(
     request: Request,
-    port_mode: str = Form("random"),
     manual_port: str = Form(""),
     secret_mode: str = Form(config.SECRET_MODE_CLASSIC),
     tls_domain: str = Form(""),
@@ -176,11 +175,16 @@ async def create_proxy(
     if redirect is not None:
         return redirect
 
+    logger.info(
+        "POST /proxies получены поля формы: manual_port=%r, secret_mode=%r, tls_domain=%r",
+        manual_port, secret_mode, tls_domain,
+    )
+
     desired_port: int | None = None
-    if port_mode == "manual":
-        cleaned_port = manual_port.strip()
+    cleaned_port = manual_port.strip()
+    if cleaned_port:
         if not cleaned_port.isdigit():
-            return _redirect_with_error("/", "Укажите корректный номер порта")
+            return _redirect_with_error("/", "Укажите корректный номер порта (только цифры)")
         desired_port = int(cleaned_port)
 
     cleaned_domain = tls_domain.strip() or None
