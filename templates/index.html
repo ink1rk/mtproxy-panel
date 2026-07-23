@@ -30,19 +30,19 @@
         {% set running_count = running_count | default(0, true) %}
         <div class="col-6 col-md-3">
             <div class="stat-card">
-                <div class="stat-value">{{ total_count }}</div>
+                <div class="stat-value" id="statTotal">{{ total_count }}</div>
                 <div class="stat-label">Всего прокси</div>
             </div>
         </div>
         <div class="col-6 col-md-3">
             <div class="stat-card">
-                <div class="stat-value text-success">{{ running_count }}</div>
+                <div class="stat-value text-success" id="statRunning">{{ running_count }}</div>
                 <div class="stat-label">Запущено</div>
             </div>
         </div>
         <div class="col-6 col-md-3">
             <div class="stat-card">
-                <div class="stat-value text-warning">{{ total_count - running_count }}</div>
+                <div class="stat-value text-warning" id="statProblem">{{ total_count - running_count }}</div>
                 <div class="stat-label">Проблемные</div>
             </div>
         </div>
@@ -355,6 +355,7 @@
             .then(function (response) { return response.ok ? response.json() : null; })
             .then(function (data) {
                 if (!data) return;
+
                 data.proxies.forEach(function (proxy) {
                     const row = document.querySelector('tr[data-id="' + proxy.id + '"]');
                     if (!row) return;
@@ -367,6 +368,17 @@
                         proxy.status === 'missing' ? 'text-bg-danger' : 'text-bg-warning'
                     );
                 });
+
+                // Пересчитываем карточки статистики по тем же свежим данным,
+                // чтобы они не расходились с реальными статусами в таблице.
+                const total = data.proxies.length;
+                const running = data.proxies.filter(function (p) { return p.status === 'running'; }).length;
+                const statTotal = document.getElementById('statTotal');
+                const statRunning = document.getElementById('statRunning');
+                const statProblem = document.getElementById('statProblem');
+                if (statTotal) statTotal.textContent = total;
+                if (statRunning) statRunning.textContent = running;
+                if (statProblem) statProblem.textContent = total - running;
             })
             .catch(function () { /* тихо игнорируем сетевые сбои опроса */ });
     }
