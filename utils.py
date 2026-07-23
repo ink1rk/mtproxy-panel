@@ -88,29 +88,36 @@ def build_container_secret(base_secret: str, mode: str, tls_domain: str | None) 
     """
     Строит secret, который будет передан в SECRET контейнера Docker.
 
-    - classic: обычный 32-символьный hex-секрет без изменений.
-    - dd: базовый секрет без изменений — режим 'dd' (random padding)
-      определяется клиентом по префиксу secret'а в самой ссылке,
-      серверу передаётся тот же базовый секрет.
-    - ee: fake-TLS — контейнеру передаётся секрет вида
-      'ee' + 32 hex символа + hex-encoded домен, как того требует
-      официальный образ telegrammessenger/proxy.
+    Официальный образ telegrammessenger/proxy (entrypoint run.sh) принимает ТОЛЬКО
+    чистый 32-символьный hex-секрет (регулярка на сервере: `^[0-9a-fA-F]{32}(,...)?$`)
+    и мгновенно завершается с ошибкой "Bad secret format" на любой другой ввод.
+    Префиксы 'dd'/'ee' и hex-encoded домен для fake-TLS — это ИСКЛЮЧИТЕЛЬНО клиентское
+    представление секрета (клиент Telegram сам включает нужную обфускацию по префиксу
+    в ссылке/QR); сервер во всех режимах (classic/dd/ee) получает один и тот же
+    базовый секрет без изменений.
+
+    Ранее для режима 'ee' сюда ошибочно возвращался секрет с префиксом и доменом —
+    из-за этого контейнер сразу завершался с ошибкой и порт не открывался
+    ("Порт N не открылся в отведённое время"), независимо от выбора порта.
     """
-    if mode == config.SECRET_MODE_EE:
-        if not tls_domain:
-            raise InvalidTlsDomainError("Для режима 'ee' обязателен домен для fake-TLS")
-        return f"ee{base_secret}{_domain_to_hex(tls_domain)}"
     return base_secret
 
 
 def build_link_secret(base_secret: str, mode: str, tls_domain: str | None) -> str:
     """
     Строит secret, который будет показан пользователю в tg://, https:// ссылках и QR.
+
+    - classic: обычный 32-символьный hex-секрет без изменений.
+    - dd: 'dd' + базовый секрет — включает на клиенте случайный паддинг (anti-DPI).
+    - ee: 'ee' + базовый секрет + hex-encoded домен — включает на клиенте fake-TLS
+      маскировку под HTTPS-соединение к указанному домену.
     """
     if mode == config.SECRET_MODE_DD:
         return f"dd{base_secret}"
     if mode == config.SECRET_MODE_EE:
-        return build_container_secret(base_secret, mode, tls_domain)
+        if not tls_domain:
+            raise InvalidTlsDomainError("Для режима 'ee' обязателен домен для fake-TLS")
+        return f"ee{base_secret}{_domain_to_hex(tls_domain)}"
     return base_secret
 
 

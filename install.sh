@@ -77,13 +77,43 @@ ensure_repo_up_to_date() {
         return
     fi
 
-    log "Синхронизирую код с origin/${branch}, чтобы исключить рассинхрон файлов."
-    if git -C "${SCRIPT_DIR}" fetch --quiet origin "${branch}" \
-        && git -C "${SCRIPT_DIR}" reset --quiet --hard "origin/${branch}"; then
+    log "Проверяю обновления в origin/${branch}."
+    if ! git -C "${SCRIPT_DIR}" fetch --quiet origin "${branch}"; then
+        log "Не удалось связаться с origin (нет сети?) — продолжаю установку с текущим " \
+            "состоянием рабочей копии."
+        return
+    fi
+
+    if ! git -C "${SCRIPT_DIR}" rev-parse --verify --quiet "origin/${branch}" >/dev/null; then
+        log "Ветка '${branch}' отсутствует в origin — пропускаю синхронизацию."
+        return
+    fi
+
+    if git -C "${SCRIPT_DIR}" merge-base --is-ancestor "origin/${branch}" HEAD; then
+        log "Локальный код уже не старше origin/${branch} — синхронизация не требуется."
+        return
+    fi
+
+    # ВАЖНО: hard-reset делаем ТОЛЬКО если это чистый fast-forward, то есть текущий
+    # HEAD является предком origin/<branch>. Если в рабочей копии есть локальные
+    # коммиты, которых нет в origin (например, сделанные прямо на сервере и ещё не
+    # запушенные), 'git reset --hard' их бы молча уничтожил — именно так ранее была
+    # потеряна диагностика, добавленная прямо на сервере. В таком случае синхронизацию
+    # пропускаем и явно предупреждаем, вместо того чтобы стирать чужую работу.
+    if ! git -C "${SCRIPT_DIR}" merge-base --is-ancestor HEAD "origin/${branch}"; then
+        log "ВНИМАНИЕ: в рабочей копии есть локальные коммиты, которых нет в origin/${branch}. " \
+            "Чтобы не потерять их, автоматическая синхронизация ПРОПУЩЕНА. Если это осознанные " \
+            "локальные изменения — запушьте их в origin ('git push'), либо выполните " \
+            "'git reset --hard origin/${branch}' вручную, чтобы явно их отбросить."
+        return
+    fi
+
+    log "Синхронизирую код с origin/${branch} (fast-forward)."
+    if git -C "${SCRIPT_DIR}" reset --quiet --hard "origin/${branch}"; then
         log "Код обновлён до последнего коммита origin/${branch}."
     else
-        log "Не удалось синхронизировать код с origin (нет сети или ветка отсутствует на сервере) — " \
-            "продолжаю установку с текущим состоянием рабочей копии."
+        log "Не удалось синхронизировать код с origin — продолжаю установку с текущим " \
+            "состоянием рабочей копии."
     fi
 }
 
