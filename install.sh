@@ -47,6 +47,47 @@ as_root() {
 }
 
 # ---------------------------------------------------------------------------
+# 0. Синхронизация кода с origin (защита от рассинхрона файлов при повторном
+#    запуске install.sh на уже установленном сервере: код в шаблонах и
+#    роутах должен всегда браться из одного и того же коммита).
+# ---------------------------------------------------------------------------
+ensure_repo_up_to_date() {
+    if [[ ! -d "${SCRIPT_DIR}/.git" ]]; then
+        log "Каталог '${SCRIPT_DIR}' не является git-репозиторием — пропускаю синхронизацию с origin."
+        log "Рекомендуется устанавливать панель через 'git clone', чтобы обновления подтягивались автоматически."
+        return
+    fi
+
+    if ! command -v git >/dev/null 2>&1; then
+        log "git не найден, пропускаю синхронизацию с origin."
+        return
+    fi
+
+    local branch
+    branch="$(git -C "${SCRIPT_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+    if [[ -z "${branch}" || "${branch}" == "HEAD" ]]; then
+        log "Не удалось определить текущую ветку git, пропускаю синхронизацию с origin."
+        return
+    fi
+
+    if ! git -C "${SCRIPT_DIR}" diff --quiet || ! git -C "${SCRIPT_DIR}" diff --cached --quiet; then
+        log "В рабочей копии есть несохранённые изменения — пропускаю синхронизацию с origin " \
+            "(чтобы не потерять локальные правки). Если это плановое обновление, сначала " \
+            "закоммитьте или отмените изменения ('git status')."
+        return
+    fi
+
+    log "Синхронизирую код с origin/${branch}, чтобы исключить рассинхрон файлов."
+    if git -C "${SCRIPT_DIR}" fetch --quiet origin "${branch}" \
+        && git -C "${SCRIPT_DIR}" reset --quiet --hard "origin/${branch}"; then
+        log "Код обновлён до последнего коммита origin/${branch}."
+    else
+        log "Не удалось синхронизировать код с origin (нет сети или ветка отсутствует на сервере) — " \
+            "продолжаю установку с текущим состоянием рабочей копии."
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # 1. Установка Python, если отсутствует
 # ---------------------------------------------------------------------------
 ensure_python() {
@@ -184,6 +225,14 @@ stop_existing_instance() {
     fi
 }
 
+clear_python_bytecode_cache() {
+    # На случай обновления кода без переустановки venv: гарантируем, что
+    # интерпретатор не подхватит устаревшие .pyc из предыдущей версии кода.
+    log "Очищаю кеш скомпилированных .pyc-файлов приложения."
+    find "${SCRIPT_DIR}" -maxdepth 4 -type d -name "__pycache__" \
+        -not -path "${VENV_DIR}/*" -exec rm -rf {} + 2>/dev/null || true
+}
+
 start_application() {
     log "Запускаю FastAPI-приложение через uvicorn."
     cd "${SCRIPT_DIR}"
@@ -235,11 +284,13 @@ verify_docker_ps() {
 # ---------------------------------------------------------------------------
 main() {
     require_root_or_sudo
+    ensure_repo_up_to_date
     ensure_python
     ensure_docker
     ensure_project_structure
     ensure_venv
     stop_existing_instance
+    clear_python_bytecode_cache
     start_application
 
     if ! wait_for_healthcheck; then
