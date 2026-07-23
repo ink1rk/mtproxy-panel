@@ -105,6 +105,21 @@
         .toast-container {
             z-index: 1080;
         }
+        /* Явные цвета для нативного <select>/<option>: на некоторых ОС/браузерах
+           опции рендерятся системными (не CSS) цветами и в тёмной теме могут
+           стать нечитаемыми (светлый текст на светлом фоне). Фиксируем цвета
+           жёстко, чтобы список был виден при любых системных настройках. */
+        select.form-select {
+            background-color: var(--surface-2);
+            color: #e9ecef;
+        }
+        select.form-select option {
+            background-color: #1e2430;
+            color: #e9ecef;
+        }
+        .opacity-50 {
+            opacity: 0.55;
+        }
     </style>
     {% block extra_head %}{% endblock %}
 </head>

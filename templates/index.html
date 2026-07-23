@@ -164,7 +164,10 @@
                     </div>
                 </div>
                 <input type="number" name="manual_port" id="manualPortInput" class="form-control mb-3"
-                       placeholder="Например, 8443" min="1" max="65535" disabled>
+                       placeholder="Например, 8443" min="1" max="65535">
+                <div class="form-text mb-3" id="manualPortHint">
+                    Заполняется, только если выбрано «Указать вручную» выше.
+                </div>
 
                 <label class="form-label small text-secondary">Режим secret</label>
                 <select name="secret_mode" id="secretModeSelect" class="form-select mb-2">
@@ -177,8 +180,8 @@
                     {% endfor %}
                 </select>
                 <input type="text" name="tls_domain" id="tlsDomainInput" class="form-control"
-                       placeholder="например, www.google.com" value="{{ default_tls_domain }}" disabled>
-                <div class="form-text">Домен нужен только для режима 'ee' (fake-TLS маскировка).</div>
+                       placeholder="например, www.google.com" value="{{ default_tls_domain }}">
+                <div class="form-text">Используется, только если выбран режим 'ee' (fake-TLS маскировка).</div>
             </div>
             <div class="modal-footer border-secondary-subtle">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
@@ -258,12 +261,24 @@
     const portManual = document.getElementById('portManual');
     const manualPortInput = document.getElementById('manualPortInput');
     function syncPortInput() {
-        manualPortInput.disabled = !portManual.checked;
-        manualPortInput.required = portManual.checked;
+        const isManual = portManual.checked;
+        manualPortInput.required = isManual;
+        manualPortInput.classList.toggle('opacity-50', !isManual);
+        // Поле НЕ блокируется (disabled), чтобы его значение гарантированно
+        // доходило до сервера при любых сбоях JS — сервер сам игнорирует
+        // его, если port_mode == "random".
     }
     if (portRandom) {
         portRandom.addEventListener('change', syncPortInput);
         portManual.addEventListener('change', syncPortInput);
+        // Если пользователь начинает печатать в поле порта, сразу переключаем
+        // радиокнопку на "вручную" — так пользователю не нужно помнить, что
+        // сначала нужно выбрать переключатель.
+        manualPortInput.addEventListener('focus', function () {
+            portManual.checked = true;
+            syncPortInput();
+        });
+        syncPortInput();
     }
 
     // --- Переключение поля домена для fake-TLS ---
@@ -271,8 +286,9 @@
     const tlsDomainInput = document.getElementById('tlsDomainInput');
     function syncDomainInput() {
         const isEe = secretModeSelect.value === 'ee';
-        tlsDomainInput.disabled = !isEe;
         tlsDomainInput.required = isEe;
+        tlsDomainInput.classList.toggle('opacity-50', !isEe);
+        // Поле НЕ блокируется (disabled) по той же причине, что и порт.
     }
     if (secretModeSelect) {
         secretModeSelect.addEventListener('change', syncDomainInput);
