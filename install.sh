@@ -22,6 +22,8 @@ readonly HEALTHCHECK_URL="http://127.0.0.1:${APP_PORT}/"
 readonly HEALTHCHECK_TIMEOUT_SECONDS=30
 readonly PYTHON_MIN_MAJOR=3
 readonly PYTHON_MIN_MINOR=10
+readonly SYSTEMD_SERVICE_NAME="mtproxy-panel"
+readonly SYSTEMD_UNIT_FILE="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}.service"
 
 log() {
     printf '[install.sh] %s\n' "$1"
@@ -44,6 +46,10 @@ as_root() {
     else
         sudo "$@"
     fi
+}
+
+has_systemd() {
+    [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -273,8 +279,21 @@ wait_for_pid_exit() {
     done
 }
 
+systemd_managed_pid() {
+    [[ -f "${SYSTEMD_UNIT_FILE}" ]] || return 0
+    as_root systemctl show -p MainPID --value "${SYSTEMD_SERVICE_NAME}" 2>/dev/null || true
+}
+
 stop_existing_instance() {
-    if [[ -f "${PID_FILE}" ]]; then
+    local under_systemd=0
+    if has_systemd && [[ -f "${SYSTEMD_UNIT_FILE}" ]] \
+        && as_root systemctl is-active --quiet "${SYSTEMD_SERVICE_NAME}" 2>/dev/null; then
+        under_systemd=1
+        log "Приложение уже управляется systemd-юнитом '${SYSTEMD_SERVICE_NAME}' — " \
+            "он будет корректно перезапущен ниже через 'systemctl restart'."
+    fi
+
+    if [[ "${under_systemd}" -eq 0 && -f "${PID_FILE}" ]]; then
         local old_pid
         old_pid="$(cat "${PID_FILE}")"
         if kill -0 "${old_pid}" 2>/dev/null; then
@@ -285,23 +304,37 @@ stop_existing_instance() {
         rm -f "${PID_FILE}"
     fi
 
-    # ВАЖНО: PID_FILE может рассинхронизироваться с реальностью (сбой между
-    # запусками, переиспользование номера PID, ручной запуск мимо install.sh
-    # и т.п.) — тогда описанный выше kill никого не остановит, порт останется
-    # занят "забытым" процессом со старым кодом, а health-check ниже всё равно
-    # получит HTTP 200 от него и install.sh решит, что всё в порядке. Поэтому
-    # независимо от PID_FILE явно проверяем, кто слушает APP_PORT, и добиваем
-    # таких "зомби" перед запуском нового экземпляра.
+    # ВАЖНО: PID_FILE (или сам systemd-юнит) может рассинхронизироваться с
+    # реальностью (сбой между запусками, переиспользование номера PID, ручной
+    # запуск мимо install.sh/systemd и т.п.) — тогда обычный kill/restart
+    # никого не остановит, порт останется занят "забытым" процессом со старым
+    # кодом, а health-check ниже всё равно получит HTTP 200 от него и
+    # install.sh решит, что всё в порядке. Поэтому независимо от PID_FILE
+    # явно проверяем, кто слушает APP_PORT, и добиваем таких "зомби" —
+    # кроме процесса, который сейчас легитимно управляется systemd (его
+    # трогать не нужно, 'systemctl restart' сделает это сам).
+    local managed_pid=""
+    if [[ "${under_systemd}" -eq 1 ]]; then
+        managed_pid="$(systemd_managed_pid)"
+    fi
+
     local stale_pids
     stale_pids="$(find_pids_on_app_port "${APP_PORT}")"
+    if [[ -n "${managed_pid}" && "${managed_pid}" != "0" ]]; then
+        stale_pids="$(grep -vx "${managed_pid}" <<< "${stale_pids}" || true)"
+    fi
+
     if [[ -n "${stale_pids}" ]]; then
-        log "Порт ${APP_PORT} всё ещё занят процессом(ами) [${stale_pids//$'\n'/, }], не учтённым(и) в run.pid — останавливаю."
+        log "Порт ${APP_PORT} всё ещё занят процессом(ами) [${stale_pids//$'\n'/, }], не учтённым(и) в run.pid/systemd — останавливаю."
         local pid
         for pid in ${stale_pids}; do
             as_root kill "${pid}" 2>/dev/null || true
         done
         sleep 2
         stale_pids="$(find_pids_on_app_port "${APP_PORT}")"
+        if [[ -n "${managed_pid}" && "${managed_pid}" != "0" ]]; then
+            stale_pids="$(grep -vx "${managed_pid}" <<< "${stale_pids}" || true)"
+        fi
         if [[ -n "${stale_pids}" ]]; then
             log "Процесс(ы) [${stale_pids//$'\n'/, }] не завершились по SIGTERM, убиваю принудительно (kill -9)."
             for pid in ${stale_pids}; do
@@ -320,8 +353,54 @@ clear_python_bytecode_cache() {
         -not -path "${VENV_DIR}/*" -exec rm -rf {} + 2>/dev/null || true
 }
 
+install_systemd_unit() {
+    log "Устанавливаю systemd-юнит '${SYSTEMD_SERVICE_NAME}' (автозапуск при загрузке сервера, автоперезапуск при сбое)."
+    local unit_content
+    unit_content="$(cat <<EOF
+[Unit]
+Description=MTProxy Control Panel (FastAPI + uvicorn)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${VENV_DIR}/bin/uvicorn main:app --host ${APP_HOST} --port ${APP_PORT}
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:${APP_LOG}
+StandardError=append:${APP_LOG}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+)"
+    printf '%s\n' "${unit_content}" | as_root tee "${SYSTEMD_UNIT_FILE}" >/dev/null
+    as_root systemctl daemon-reload
+    as_root systemctl enable "${SYSTEMD_SERVICE_NAME}" >/dev/null 2>&1 || true
+}
+
 start_application() {
-    log "Запускаю FastAPI-приложение через uvicorn."
+    if has_systemd; then
+        install_systemd_unit
+        log "Перезапускаю приложение через systemd (${SYSTEMD_SERVICE_NAME})."
+        as_root systemctl restart "${SYSTEMD_SERVICE_NAME}"
+        sleep 1
+
+        local pid
+        pid="$(systemd_managed_pid)"
+        if [[ -n "${pid}" && "${pid}" != "0" ]]; then
+            echo "${pid}" > "${PID_FILE}"
+        else
+            rm -f "${PID_FILE}"
+        fi
+        log "Приложение запущено через systemd, PID=${pid:-неизвестен}, логи: ${APP_LOG}"
+        return
+    fi
+
+    log "systemd не обнаружен — запускаю приложение в фоне через nohup " \
+        "(ВНИМАНИЕ: без systemd панель не переживёт перезагрузку сервера — " \
+        "после ребута потребуется вручную запустить 'bash install.sh' снова)."
     cd "${SCRIPT_DIR}"
 
     local run_cmd=("${VENV_DIR}/bin/uvicorn" main:app --host "${APP_HOST}" --port "${APP_PORT}")
@@ -424,8 +503,20 @@ main() {
         log " Учётная запись администратора уже существует (пароль не менялся)."
     fi
     log " Логи приложения: ${APP_LOG}"
-    log " PID процесса:    $(cat "${PID_FILE}")"
-    log " Остановить:      kill \$(cat ${PID_FILE})"
+    if has_systemd; then
+        log " Панель установлена как systemd-сервис '${SYSTEMD_SERVICE_NAME}' и будет"
+        log " автоматически запускаться при перезагрузке сервера, а также сама"
+        log " перезапускаться при сбое."
+        log " Статус:          systemctl status ${SYSTEMD_SERVICE_NAME}"
+        log " Логи (journal):  journalctl -u ${SYSTEMD_SERVICE_NAME} -f"
+        log " Перезапуск:      systemctl restart ${SYSTEMD_SERVICE_NAME}"
+        log " Остановить:      systemctl stop ${SYSTEMD_SERVICE_NAME}"
+    else
+        log " ВНИМАНИЕ: systemd не найден, панель запущена в фоне без автозапуска —"
+        log " после перезагрузки сервера потребуется вручную выполнить 'bash install.sh'."
+        log " PID процесса:    $(cat "${PID_FILE}" 2>/dev/null || echo '?')"
+        log " Остановить:      kill \$(cat ${PID_FILE})"
+    fi
     log "==============================================================="
 }
 
