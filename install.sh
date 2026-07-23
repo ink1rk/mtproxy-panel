@@ -242,6 +242,37 @@ ensure_venv() {
 # ---------------------------------------------------------------------------
 # 5. Запуск FastAPI-приложения в фоне (без systemd)
 # ---------------------------------------------------------------------------
+find_pids_on_app_port() {
+    # Возвращает PID-ы всех процессов, слушающих APP_PORT, независимо от того,
+    # что записано в PID_FILE. Пробуем несколько инструментов по очереди,
+    # т.к. набор утилит отличается между минимальными образами Ubuntu.
+    local port="$1" pids=""
+    if command -v ss >/dev/null 2>&1; then
+        pids="$(as_root ss -ltnp 2>/dev/null | awk -v p=":${port}$" '$4 ~ p' \
+            | grep -oP 'pid=\K[0-9]+' | sort -u)"
+    fi
+    if [[ -z "${pids}" ]] && command -v fuser >/dev/null 2>&1; then
+        pids="$(as_root fuser -n tcp "${port}" 2>/dev/null | tr -s ' \t' '\n' \
+            | grep -E '^[0-9]+$' | sort -u)"
+    fi
+    if [[ -z "${pids}" ]] && command -v lsof >/dev/null 2>&1; then
+        pids="$(as_root lsof -ti "tcp:${port}" 2>/dev/null | sort -u)"
+    fi
+    if [[ -z "${pids}" ]] && command -v netstat >/dev/null 2>&1; then
+        pids="$(as_root netstat -ltnp 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {print $NF}' \
+            | grep -oE '^[0-9]+' | sort -u)"
+    fi
+    printf '%s' "${pids}"
+}
+
+wait_for_pid_exit() {
+    local pid="$1" timeout="$2" waited=0
+    while kill -0 "${pid}" 2>/dev/null && (( waited < timeout )); do
+        sleep 1
+        (( waited += 1 ))
+    done
+}
+
 stop_existing_instance() {
     if [[ -f "${PID_FILE}" ]]; then
         local old_pid
@@ -249,9 +280,35 @@ stop_existing_instance() {
         if kill -0 "${old_pid}" 2>/dev/null; then
             log "Останавливаю ранее запущенный экземпляр приложения (PID ${old_pid})."
             kill "${old_pid}" || true
-            sleep 2
+            wait_for_pid_exit "${old_pid}" 10
         fi
         rm -f "${PID_FILE}"
+    fi
+
+    # ВАЖНО: PID_FILE может рассинхронизироваться с реальностью (сбой между
+    # запусками, переиспользование номера PID, ручной запуск мимо install.sh
+    # и т.п.) — тогда описанный выше kill никого не остановит, порт останется
+    # занят "забытым" процессом со старым кодом, а health-check ниже всё равно
+    # получит HTTP 200 от него и install.sh решит, что всё в порядке. Поэтому
+    # независимо от PID_FILE явно проверяем, кто слушает APP_PORT, и добиваем
+    # таких "зомби" перед запуском нового экземпляра.
+    local stale_pids
+    stale_pids="$(find_pids_on_app_port "${APP_PORT}")"
+    if [[ -n "${stale_pids}" ]]; then
+        log "Порт ${APP_PORT} всё ещё занят процессом(ами) [${stale_pids//$'\n'/, }], не учтённым(и) в run.pid — останавливаю."
+        local pid
+        for pid in ${stale_pids}; do
+            as_root kill "${pid}" 2>/dev/null || true
+        done
+        sleep 2
+        stale_pids="$(find_pids_on_app_port "${APP_PORT}")"
+        if [[ -n "${stale_pids}" ]]; then
+            log "Процесс(ы) [${stale_pids//$'\n'/, }] не завершились по SIGTERM, убиваю принудительно (kill -9)."
+            for pid in ${stale_pids}; do
+                as_root kill -9 "${pid}" 2>/dev/null || true
+            done
+            sleep 1
+        fi
     fi
 }
 
@@ -302,6 +359,31 @@ wait_for_healthcheck() {
     return 1
 }
 
+verify_started_process_owns_port() {
+    # Здоровый HTTP 200 сам по себе не гарантирует, что отвечает именно
+    # процесс, который мы только что запустили (см. find_pids_on_app_port) —
+    # он мог получить ответ от "забытого" старого процесса на том же порту.
+    # Явно сверяем PID из run.pid с тем, что реально слушает APP_PORT.
+    local expected_pid actual_pids
+    expected_pid="$(cat "${PID_FILE}" 2>/dev/null || echo '')"
+    actual_pids="$(find_pids_on_app_port "${APP_PORT}")"
+
+    if [[ -z "${actual_pids}" ]]; then
+        log "ПРЕДУПРЕЖДЕНИЕ: не удалось определить, какой процесс слушает порт ${APP_PORT} " \
+            "(нет ss/fuser/lsof?) — пропускаю проверку соответствия PID."
+        return
+    fi
+
+    if ! grep -qx "${expected_pid}" <<< "${actual_pids}"; then
+        fail "Порт ${APP_PORT} отвечает, но слушает его PID [${actual_pids//$'\n'/, }], а не " \
+            "запущенный этим install.sh процесс (PID ${expected_pid} из run.pid). Скорее всего, " \
+            "остался старый процесс со старым кодом (см. 'ps -p <PID> -o lstart,cmd'), который " \
+            "не был корректно остановлен. Останавливать посторонний процесс автоматически не " \
+            "буду — проверьте и завершите его вручную (kill -9 <PID>), затем запустите install.sh снова."
+    fi
+    log "Проверка PID пройдена: порт ${APP_PORT} слушает именно запущенный процесс (PID ${expected_pid})."
+}
+
 verify_docker_ps() {
     if ! as_root docker ps >/dev/null 2>&1; then
         fail "Команда 'docker ps' завершилась ошибкой после установки."
@@ -329,6 +411,7 @@ main() {
         fail "Проверка HTTP 200 на ${HEALTHCHECK_URL} не пройдена. Установка прервана."
     fi
 
+    verify_started_process_owns_port
     verify_docker_ps
 
     log "==============================================================="
