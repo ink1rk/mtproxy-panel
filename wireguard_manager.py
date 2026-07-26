@@ -180,6 +180,17 @@ class WireGuardManager:
                 continue
         return result
 
+    def restart_server(self) -> None:
+        """Перезапускает контейнер WireGuard-сервера, не трогая конфигурацию/peer-ов."""
+        container = self._get_container()
+        if container is None:
+            raise WireGuardDockerError("Контейнер WireGuard не найден — сервер ещё не настроен")
+        try:
+            container.restart(timeout=10)
+        except APIError as exc:
+            raise WireGuardDockerError(f"Не удалось перезапустить контейнер WireGuard: {exc}") from exc
+        self._wait_running(container)
+
     def remove_server(self) -> None:
         """Полностью удаляет контейнер WireGuard-сервера (для полного сброса VPN)."""
         container = self._get_container()

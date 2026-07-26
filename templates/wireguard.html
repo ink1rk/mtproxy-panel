@@ -70,6 +70,17 @@
         </div>
     </div>
 
+    <div class="d-flex gap-2 mb-4">
+        <form method="post" action="/wireguard/restart" class="d-inline">
+            <button type="submit" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-arrow-clockwise"></i> Перезапустить сервер
+            </button>
+        </form>
+        <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#resetServerModal">
+            <i class="bi bi-exclamation-triangle"></i> Сбросить и настроить заново
+        </button>
+    </div>
+
     {% if peers|length == 0 %}
     <div class="card-surface p-5 text-center text-secondary">
         <i class="bi bi-inboxes" style="font-size: 2rem;"></i>
@@ -145,6 +156,27 @@
             <div class="modal-footer border-secondary-subtle">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
                 <button type="submit" class="btn brand-gradient-btn text-white">Добавить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Модалка: подтверждение полного сброса сервера -->
+<div class="modal fade" id="resetServerModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form method="post" action="/wireguard/reset" class="modal-content card-surface">
+            <div class="modal-header border-secondary-subtle">
+                <h5 class="modal-title">Сбросить WireGuard-сервер?</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                Контейнер сервера, <strong>все устройства</strong> и их конфиги/QR-коды будут
+                удалены безвозвратно. После этого можно будет настроить сервер заново
+                (другой порт, подсеть, DNS).
+            </div>
+            <div class="modal-footer border-secondary-subtle">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="submit" class="btn btn-danger">Сбросить всё</button>
             </div>
         </form>
     </div>

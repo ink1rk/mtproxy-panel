@@ -138,6 +138,17 @@ class XrayManager:
             time.sleep(0.5)
         raise XrayDockerError("Контейнер Xray не перешёл в статус 'running' за отведённое время")
 
+    def restart_server(self) -> None:
+        """Перезапускает контейнер Xray-сервера, не трогая конфигурацию/клиентов."""
+        container = self._get_container()
+        if container is None:
+            raise XrayDockerError("Контейнер Xray не найден — сервер ещё не настроен")
+        try:
+            container.restart(timeout=10)
+        except APIError as exc:
+            raise XrayDockerError(f"Не удалось перезапустить контейнер Xray: {exc}") from exc
+        self._wait_running(container)
+
     def remove_server(self) -> None:
         """Полностью удаляет контейнер Xray-сервера (для полного сброса VPN)."""
         container = self._get_container()

@@ -152,6 +152,14 @@ class WireGuardRepository:
             connection.execute(f"DELETE FROM {config.WG_PEERS_TABLE_NAME} WHERE id = ?", (peer_id,))
         return peer
 
+    def delete_all_peers(self) -> None:
+        with get_connection() as connection:
+            connection.execute(f"DELETE FROM {config.WG_PEERS_TABLE_NAME}")
+
+    def delete_server_config(self) -> None:
+        with get_connection() as connection:
+            connection.execute(f"DELETE FROM {config.WG_SERVER_CONFIG_TABLE_NAME} WHERE id = 1")
+
 
 # ---------------------------------------------------------------------------
 # Xray / VLESS
@@ -264,3 +272,11 @@ class XrayRepository:
         with get_connection() as connection:
             connection.execute(f"DELETE FROM {config.VLESS_CLIENTS_TABLE_NAME} WHERE id = ?", (client_id,))
         return client
+
+    def delete_all_clients(self) -> None:
+        with get_connection() as connection:
+            connection.execute(f"DELETE FROM {config.VLESS_CLIENTS_TABLE_NAME}")
+
+    def delete_server_config(self) -> None:
+        with get_connection() as connection:
+            connection.execute(f"DELETE FROM {config.XRAY_SERVER_CONFIG_TABLE_NAME} WHERE id = 1")

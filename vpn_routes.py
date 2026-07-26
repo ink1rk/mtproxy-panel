@@ -152,6 +152,44 @@ async def wireguard_delete_peer(request: Request, peer_id: int):
     return RedirectResponse(url="/wireguard", status_code=303)
 
 
+@router.post("/wireguard/restart")
+async def wireguard_restart(request: Request):
+    redirect = auth.require_login_redirect(request)
+    if redirect is not None:
+        return redirect
+
+    service, init_error = _try_get_wg_service()
+    if init_error is not None:
+        return _redirect_with_error("/wireguard", init_error)
+
+    assert service is not None
+    try:
+        service.restart_server()
+    except VpnServiceError as exc:
+        logger.error("Ошибка перезапуска WireGuard-сервера: %s", exc)
+        return _redirect_with_error("/wireguard", str(exc))
+    return RedirectResponse(url="/wireguard?message=Сервер+перезапущен", status_code=303)
+
+
+@router.post("/wireguard/reset")
+async def wireguard_reset(request: Request):
+    redirect = auth.require_login_redirect(request)
+    if redirect is not None:
+        return redirect
+
+    service, init_error = _try_get_wg_service()
+    if init_error is not None:
+        return _redirect_with_error("/wireguard", init_error)
+
+    assert service is not None
+    try:
+        service.reset_server()
+    except VpnServiceError as exc:
+        logger.error("Ошибка сброса конфигурации WireGuard: %s", exc)
+        return _redirect_with_error("/wireguard", str(exc))
+    return RedirectResponse(url="/wireguard?message=Конфигурация+сброшена+—+настройте+сервер+заново", status_code=303)
+
+
 @router.get("/wireguard/peers/{peer_id}/download")
 async def wireguard_download_peer(request: Request, peer_id: int):
     redirect = auth.require_login_redirect(request)
@@ -283,6 +321,44 @@ async def vless_delete_client(request: Request, client_id: int):
         logger.error("Ошибка удаления VLESS-клиента id=%d: %s", client_id, exc)
         return _redirect_with_error("/vless", str(exc))
     return RedirectResponse(url="/vless", status_code=303)
+
+
+@router.post("/vless/restart")
+async def vless_restart(request: Request):
+    redirect = auth.require_login_redirect(request)
+    if redirect is not None:
+        return redirect
+
+    service, init_error = _try_get_xray_service()
+    if init_error is not None:
+        return _redirect_with_error("/vless", init_error)
+
+    assert service is not None
+    try:
+        service.restart_server()
+    except VpnServiceError as exc:
+        logger.error("Ошибка перезапуска Xray-сервера: %s", exc)
+        return _redirect_with_error("/vless", str(exc))
+    return RedirectResponse(url="/vless?message=Сервер+перезапущен", status_code=303)
+
+
+@router.post("/vless/reset")
+async def vless_reset(request: Request):
+    redirect = auth.require_login_redirect(request)
+    if redirect is not None:
+        return redirect
+
+    service, init_error = _try_get_xray_service()
+    if init_error is not None:
+        return _redirect_with_error("/vless", init_error)
+
+    assert service is not None
+    try:
+        service.reset_server()
+    except VpnServiceError as exc:
+        logger.error("Ошибка сброса конфигурации Xray: %s", exc)
+        return _redirect_with_error("/vless", str(exc))
+    return RedirectResponse(url="/vless?message=Конфигурация+сброшена+—+настройте+сервер+заново", status_code=303)
 
 
 # ---------------------------------------------------------------------------
