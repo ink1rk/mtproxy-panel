@@ -22,10 +22,36 @@ class PeerForConfig:
     allocated_ip: str
 
 
+def _subnet_base_and_prefix(subnet: str) -> tuple[str, str]:
+    """Разбирает '10.66.0.0/24' -> ('10.66.0', '24'). Дефолт префикса — '24'."""
+    network_part, _, prefix = subnet.partition("/")
+    octets = network_part.split(".")
+    if len(octets) != 4:
+        raise ValueError(f"Некорректная подсеть: {subnet!r}")
+    return ".".join(octets[:3]), (prefix or "24")
+
+
+def server_tunnel_address(subnet: str) -> str:
+    """
+    Адрес самого сервера в туннеле — всегда '.1' указанной подсети.
+    ВАЖНО: ранее здесь был захардкожен config.WG_SERVER_TUNNEL_IP ('10.66.0.1')
+    независимо от подсети, которую вводит администратор при настройке — если
+    он указывал любую другую подсеть, сервер поднимался с адресом ИЗ ЧУЖОЙ
+    подсети, а выделяемые пирам IP (allocate_next_ip, ниже) были из подсети,
+    которую он реально ввёл. Peer никогда не мог достучаться до сервера,
+    потому что на кону разные /24-сети — тот же класс проблем, что и с
+    "чужим" ключом при баге PEERS=0 (см. историю коммитов), просто в другом
+    месте. Теперь адрес сервера всегда согласован с фактической подсетью.
+    """
+    base, _ = _subnet_base_and_prefix(subnet)
+    return f"{base}.1"
+
+
 def render_server_config(
     *,
     server_private_key: str,
     listen_port: int,
+    subnet: str,
     peers: list[PeerForConfig],
 ) -> str:
     """
@@ -39,10 +65,11 @@ def render_server_config(
     WireGuard-сервера в Docker, подтверждённый несколькими независимыми
     источниками, включая официальный блог LinuxServer.io).
     """
+    _, prefix = _subnet_base_and_prefix(subnet)
     lines = [
         "[Interface]",
         f"PrivateKey = {server_private_key}",
-        f"Address = {config.WG_SERVER_TUNNEL_IP}/24",
+        f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
         "PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; "
         "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE",

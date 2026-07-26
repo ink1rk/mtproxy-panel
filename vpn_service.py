@@ -96,7 +96,7 @@ class WireGuardService:
         server_private_key, server_public_key = crypto_utils.generate_wireguard_keypair()
 
         server_conf_text = wireguard_config.render_server_config(
-            server_private_key=server_private_key, listen_port=listen_port, peers=[],
+            server_private_key=server_private_key, listen_port=listen_port, subnet=subnet, peers=[],
         )
         wg_confs_dir = config.WG_CONFIG_DIR / "wg_confs"
         wg_confs_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +134,7 @@ class WireGuardService:
         server_conf_text = wireguard_config.render_server_config(
             server_private_key=server_config.server_private_key,
             listen_port=server_config.listen_port,
+            subnet=server_config.subnet,
             peers=peers,
         )
         wg_confs_dir = config.WG_CONFIG_DIR / "wg_confs"
@@ -204,6 +205,32 @@ class WireGuardService:
         except WireGuardDockerError as exc:
             logger.error("Не удалось применить конфигурацию после удаления peer: %s", exc)
             raise VpnServiceError(f"Peer удалён из базы, но применить конфигурацию не удалось: {exc}") from exc
+
+    def restart_server(self) -> None:
+        """Перезапускает контейнер WireGuard-сервера, не трогая настройки/peer-ов."""
+        if self._repository.get_server_config() is None:
+            raise VpnServiceError("WireGuard-сервер ещё не настроен")
+        try:
+            self._manager.restart_server()
+        except WireGuardDockerError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+    def reset_server(self) -> None:
+        """
+        Полностью сбрасывает WireGuard: удаляет всех peer-ов (с QR-кодами),
+        серверную конфигурацию из БД и Docker-контейнер, чтобы можно было
+        настроить сервер заново с чистого листа (другой порт/подсеть/DNS).
+        Удаление контейнера — best-effort: даже если оно не удастся, БД всё
+        равно очищается, и следующая настройка перезапишет конфиг заново.
+        """
+        for peer in self._repository.get_all_peers():
+            utils.delete_qr_code(peer.qr_filename)
+        self._repository.delete_all_peers()
+        self._repository.delete_server_config()
+        try:
+            self._manager.remove_server()
+        except WireGuardDockerError as exc:
+            logger.warning("Не удалось удалить контейнер WireGuard при сбросе конфигурации: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +357,30 @@ class XrayService:
         except XrayDockerError as exc:
             logger.error("Не удалось применить конфигурацию после удаления клиента: %s", exc)
             raise VpnServiceError(f"Клиент удалён из базы, но применить конфигурацию не удалось: {exc}") from exc
+
+    def restart_server(self) -> None:
+        """Перезапускает контейнер Xray-сервера, не трогая настройки/клиентов."""
+        if self._repository.get_server_config() is None:
+            raise VpnServiceError("Xray-сервер ещё не настроен")
+        try:
+            self._manager.restart_server()
+        except XrayDockerError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+    def reset_server(self) -> None:
+        """
+        Полностью сбрасывает Xray: удаляет всех клиентов (с QR-кодами),
+        серверную конфигурацию из БД и Docker-контейнер, чтобы можно было
+        настроить сервер заново с чистого листа (другой порт/dest/SNI).
+        """
+        for client in self._repository.get_all_clients():
+            utils.delete_qr_code(client.qr_filename)
+        self._repository.delete_all_clients()
+        self._repository.delete_server_config()
+        try:
+            self._manager.remove_server()
+        except XrayDockerError as exc:
+            logger.warning("Не удалось удалить контейнер Xray при сбросе конфигурации: %s", exc)
 
     def _apply_client_list(self, server_config: XrayServerConfig) -> None:
         client_uuids = [c.client_uuid for c in self._repository.get_all_clients()]
