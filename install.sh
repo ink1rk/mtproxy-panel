@@ -194,9 +194,15 @@ ensure_docker() {
         rm -f /tmp/get-docker.sh
     fi
 
+    # ВАЖНО: 'systemctl enable' вызываем ВСЕГДА, а не только когда daemon сейчас
+    # неактивен — иначе на повторных запусках install.sh (когда Docker уже
+    # запущен) автозапуск при перезагрузке сервера никогда бы не включился,
+    # если по какой-то причине не был включён при самой первой установке.
+    if has_systemd; then
+        as_root systemctl enable docker >/dev/null 2>&1 || true
+    fi
     if ! as_root systemctl is-active --quiet docker 2>/dev/null; then
         log "Запускаю Docker daemon."
-        as_root systemctl enable docker >/dev/null 2>&1 || true
         as_root systemctl start docker || as_root service docker start
     fi
 
