@@ -149,6 +149,37 @@ class WireGuardManager:
             )
         logger.info("Конфигурация WireGuard применена на горячую (wg syncconf)")
 
+    def get_peer_last_handshakes(self) -> dict[str, int]:
+        """
+        Возвращает {public_key: unix_timestamp последнего handshake}. WireGuard
+        не пишет лог о каждом подключении (это не TCP-прокси, а UDP-туннель без
+        событийного протокола) — время последнего handshake — самый прямой
+        показатель "жив ли клиент" ("0" из вывода wg означает "ни разу").
+        """
+        container = self._get_container()
+        if container is None:
+            return {}
+        try:
+            exit_code, output = container.exec_run(
+                ["wg", "show", config.WG_INTERFACE_NAME, "latest-handshakes"]
+            )
+        except APIError:
+            return {}
+        if exit_code != 0:
+            return {}
+
+        result: dict[str, int] = {}
+        for line in output.decode("utf-8", "replace").splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            public_key, timestamp = parts
+            try:
+                result[public_key] = int(timestamp)
+            except ValueError:
+                continue
+        return result
+
     def remove_server(self) -> None:
         """Полностью удаляет контейнер WireGuard-сервера (для полного сброса VPN)."""
         container = self._get_container()

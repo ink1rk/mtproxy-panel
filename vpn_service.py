@@ -6,6 +6,7 @@ Routes обращаются только сюда — вся логика setup/
 from __future__ import annotations
 
 import logging
+import time
 
 import config
 import crypto_utils
@@ -22,6 +23,23 @@ logger = logging.getLogger(__name__)
 
 class VpnServiceError(RuntimeError):
     """Единая ошибка VPN сервисного слоя, безопасная для показа пользователю."""
+
+
+def _format_relative_time(epoch_seconds: int) -> str:
+    """Человекочитаемое 'N назад' для отображения последнего handshake peer-а."""
+    if not epoch_seconds:
+        return "нет подключений"
+    delta = max(0, int(time.time()) - epoch_seconds)
+    if delta < 60:
+        return "меньше минуты назад"
+    minutes = delta // 60
+    if minutes < 60:
+        return f"{minutes} мин. назад"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} ч. назад"
+    days = hours // 24
+    return f"{days} дн. назад"
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +63,19 @@ class WireGuardService:
 
     def list_peers(self) -> list[WireGuardPeer]:
         return self._repository.get_all_peers()
+
+    def get_peer_connection_labels(self) -> dict[int, str]:
+        """
+        {peer.id: 'N назад' / 'нет подключений'} по последнему WireGuard
+        handshake — единственный доступный панели индикатор "жив ли клиент"
+        для UDP-туннеля (в отличие от MTProxy/Xray, у WireGuard нет лога
+        отдельных соединений).
+        """
+        handshakes_by_pubkey = self._manager.get_peer_last_handshakes()
+        return {
+            peer.id: _format_relative_time(handshakes_by_pubkey.get(peer.public_key, 0))
+            for peer in self._repository.get_all_peers()
+        }
 
     def setup_server(self, *, listen_port: int, subnet: str, dns: str) -> WireGuardServerConfig:
         """
