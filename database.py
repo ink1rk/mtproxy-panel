@@ -13,6 +13,18 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Реестр всех таблиц приложения: (имя_таблицы, ожидаемые_колонки).
+# Добавление новой таблицы = добавление одной строки сюда; создание и
+# миграция схемы происходят автоматически для всех таблиц из реестра.
+_TABLE_REGISTRY: tuple[tuple[str, dict[str, str]], ...] = (
+    (config.PROXIES_TABLE_NAME, config.EXPECTED_PROXIES_COLUMNS),
+    (config.ADMIN_USERS_TABLE_NAME, config.EXPECTED_ADMIN_USERS_COLUMNS),
+    (config.WG_SERVER_CONFIG_TABLE_NAME, config.EXPECTED_WG_SERVER_CONFIG_COLUMNS),
+    (config.WG_PEERS_TABLE_NAME, config.EXPECTED_WG_PEERS_COLUMNS),
+    (config.XRAY_SERVER_CONFIG_TABLE_NAME, config.EXPECTED_XRAY_SERVER_CONFIG_COLUMNS),
+    (config.VLESS_CLIENTS_TABLE_NAME, config.EXPECTED_VLESS_CLIENTS_COLUMNS),
+)
+
 
 @contextmanager
 def get_connection() -> Iterator[sqlite3.Connection]:
@@ -39,22 +51,11 @@ def get_connection() -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def _create_table_if_missing(connection: sqlite3.Connection) -> None:
-    proxies_columns_sql = ", ".join(
-        f"{name} {definition}"
-        for name, definition in config.EXPECTED_PROXIES_COLUMNS.items()
-    )
-    connection.execute(
-        f"CREATE TABLE IF NOT EXISTS {config.PROXIES_TABLE_NAME} ({proxies_columns_sql})"
-    )
-
-    admin_columns_sql = ", ".join(
-        f"{name} {definition}"
-        for name, definition in config.EXPECTED_ADMIN_USERS_COLUMNS.items()
-    )
-    connection.execute(
-        f"CREATE TABLE IF NOT EXISTS {config.ADMIN_USERS_TABLE_NAME} ({admin_columns_sql})"
-    )
+def _create_table_if_missing(
+    connection: sqlite3.Connection, table_name: str, expected_columns: dict[str, str]
+) -> None:
+    columns_sql = ", ".join(f"{name} {definition}" for name, definition in expected_columns.items())
+    connection.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns_sql})")
 
 
 def _migrate_table_columns(
@@ -79,18 +80,23 @@ def _migrate_table_columns(
             continue
         logger.info("Миграция: добавляю отсутствующую колонку '%s.%s'", table_name, column_name)
         safe_definition = definition.replace("UNIQUE", "").replace("NOT NULL", "")
+        # CHECK-констрейнты (например 'CHECK (id = 1)') относятся к таблице
+        # целиком и не могут быть добавлены через ALTER TABLE ADD COLUMN —
+        # такие определения тоже безопасно урезаем при миграции колонки.
+        if "CHECK" in safe_definition.upper():
+            safe_definition = safe_definition.split("CHECK")[0].strip()
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {safe_definition}")
 
 
 def init_db() -> None:
     """
     Инициализирует базу данных при старте приложения:
-    создаёт таблицы, если их нет, и выполняет миграцию отсутствующих колонок.
+    создаёт все таблицы из реестра, если их нет, и выполняет миграцию
+    отсутствующих колонок в каждой из них.
     """
     with get_connection() as connection:
-        _create_table_if_missing(connection)
-        _migrate_table_columns(connection, config.PROXIES_TABLE_NAME, config.EXPECTED_PROXIES_COLUMNS)
-        _migrate_table_columns(
-            connection, config.ADMIN_USERS_TABLE_NAME, config.EXPECTED_ADMIN_USERS_COLUMNS
-        )
+        for table_name, expected_columns in _TABLE_REGISTRY:
+            _create_table_if_missing(connection, table_name, expected_columns)
+        for table_name, expected_columns in _TABLE_REGISTRY:
+            _migrate_table_columns(connection, table_name, expected_columns)
     logger.info("База данных инициализирована: %s", config.DATABASE_PATH)
