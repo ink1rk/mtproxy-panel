@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 import auth
 import config
+from container_logs import get_container_logs, list_log_sources
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,15 @@ async def logs_page(request: Request) -> HTMLResponse:
     )
 
 
+def _filter_lines(all_lines: list[str], level_filter: str, search_filter: str) -> list[str]:
+    filtered = all_lines
+    if level_filter:
+        filtered = [line for line in filtered if f"| {level_filter}" in line or f"|{level_filter}" in line]
+    if search_filter:
+        filtered = [line for line in filtered if search_filter in line.lower()]
+    return filtered
+
+
 @router.get("/api/logs")
 async def api_logs(request: Request) -> JSONResponse:
     redirect = auth.require_login_redirect(request)
@@ -64,13 +74,27 @@ async def api_logs(request: Request) -> JSONResponse:
         lines_count = DEFAULT_RETURNED_LINES
     level_filter = (query.get("level") or "").strip().upper()
     search_filter = (query.get("q") or "").strip().lower()
+    source = (query.get("source") or "panel").strip()
 
-    all_lines = _read_tail_lines(config.LOG_FILE_PATH, MAX_RETURNED_LINES)
+    if source == "panel":
+        all_lines = _read_tail_lines(config.LOG_FILE_PATH, MAX_RETURNED_LINES)
+    else:
+        known_names = {s.name for s in list_log_sources()}
+        if source not in known_names:
+            return JSONResponse({"detail": "неизвестный источник логов"}, status_code=404)
+        all_lines = get_container_logs(source, tail=MAX_RETURNED_LINES)
 
-    filtered = all_lines
-    if level_filter:
-        filtered = [line for line in filtered if f"| {level_filter}" in line or f"|{level_filter}" in line]
-    if search_filter:
-        filtered = [line for line in filtered if search_filter in line.lower()]
-
+    filtered = _filter_lines(all_lines, level_filter, search_filter)
     return JSONResponse({"lines": filtered[-lines_count:], "total_available": len(all_lines)})
+
+
+@router.get("/api/log-sources")
+async def api_log_sources(request: Request) -> JSONResponse:
+    """Список доступных источников логов (панель + текущие MTProxy/WireGuard/Xray контейнеры)."""
+    redirect = auth.require_login_redirect(request)
+    if redirect is not None:
+        return JSONResponse({"detail": "unauthorized"}, status_code=401)
+
+    sources = [{"name": "panel", "label": "Панель (app.log)"}]
+    sources.extend({"name": s.name, "label": s.label} for s in list_log_sources())
+    return JSONResponse({"sources": sources})
