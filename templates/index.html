@@ -1,27 +1,9 @@
 {% extends "base.html" %}
+{% from "_navbar.html" import navbar %}
 {% block title %}MTProxy Control Panel{% endblock %}
 {% block body %}
 
-<nav class="navbar navbar-expand border-bottom" style="border-color: var(--border-soft) !important;">
-    <div class="container-fluid px-4">
-        <span class="navbar-brand navbar-brand-panel">
-            <i class="bi bi-router"></i> MTProxy Control Panel
-        </span>
-        <div class="d-flex align-items-center gap-2">
-            <span class="text-secondary small d-none d-sm-inline">
-                <i class="bi bi-person-circle"></i> {{ username }}
-            </span>
-            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#passwordModal">
-                <i class="bi bi-key"></i> Пароль
-            </button>
-            <form method="post" action="/logout" class="d-inline">
-                <button type="submit" class="btn btn-sm btn-outline-danger">
-                    <i class="bi bi-box-arrow-right"></i> Выйти
-                </button>
-            </form>
-        </div>
-    </div>
-</nav>
+{{ navbar('proxies', username) }}
 
 <div class="container-fluid px-4 py-4">
 

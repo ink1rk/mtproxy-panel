@@ -1,0 +1,310 @@
+"""
+Сервисный слой для VPN-подсистем: WireGuard и Xray/VLESS.
+Routes обращаются только сюда — вся логика setup/добавления/удаления
+клиентов, работы с Docker и генерации конфигов инкапсулирована здесь.
+"""
+from __future__ import annotations
+
+import logging
+
+import config
+import crypto_utils
+import utils
+import wireguard_config
+import xray_config
+from models import VlessClient, WireGuardPeer, WireGuardServerConfig, XrayServerConfig
+from vpn_repository import AlreadyExistsError, WireGuardRepository, XrayRepository
+from wireguard_manager import WireGuardDockerError, WireGuardManager
+from xray_manager import XrayDockerError, XrayManager
+
+logger = logging.getLogger(__name__)
+
+
+class VpnServiceError(RuntimeError):
+    """Единая ошибка VPN сервисного слоя, безопасная для показа пользователю."""
+
+
+# ---------------------------------------------------------------------------
+# WireGuard
+# ---------------------------------------------------------------------------
+class WireGuardService:
+    """Оркестрирует настройку сервера и управление peer-ами WireGuard."""
+
+    def __init__(self) -> None:
+        self._repository = WireGuardRepository()
+        try:
+            self._manager = WireGuardManager()
+        except WireGuardDockerError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+    def get_server_config(self) -> WireGuardServerConfig | None:
+        return self._repository.get_server_config()
+
+    def get_status(self) -> str:
+        return self._manager.get_status()
+
+    def list_peers(self) -> list[WireGuardPeer]:
+        return self._repository.get_all_peers()
+
+    def setup_server(self, *, listen_port: int, subnet: str, dns: str) -> WireGuardServerConfig:
+        """
+        Первоначальная настройка WireGuard-сервера: генерирует ключи,
+        определяет публичный IP, поднимает контейнер. При любой ошибке —
+        контейнер откатывается, запись в БД не создаётся.
+        """
+        try:
+            utils.validate_manual_port(listen_port)
+        except utils.PortUnavailableError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+        try:
+            endpoint_ip = utils.get_server_public_ip()
+        except utils.PublicIPLookupError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+        server_private_key, server_public_key = crypto_utils.generate_wireguard_keypair()
+
+        server_conf_text = wireguard_config.render_server_config(
+            server_private_key=server_private_key, listen_port=listen_port, peers=[],
+        )
+        wg_confs_dir = config.WG_CONFIG_DIR / "wg_confs"
+        wg_confs_dir.mkdir(parents=True, exist_ok=True)
+        (wg_confs_dir / f"{config.WG_INTERFACE_NAME}.conf").write_text(server_conf_text, encoding="utf-8")
+
+        try:
+            self._manager.ensure_server_running(listen_port)
+        except WireGuardDockerError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+        return self._repository.save_server_config(
+            server_private_key=server_private_key,
+            server_public_key=server_public_key,
+            listen_port=listen_port,
+            subnet=subnet,
+            endpoint_ip=endpoint_ip,
+            dns=dns,
+        )
+
+    def ensure_running_if_configured(self) -> None:
+        """Вызывается при старте приложения: если сервер уже был настроен ранее — поднимает контейнер."""
+        server_config = self._repository.get_server_config()
+        if server_config is None:
+            return
+        try:
+            self._manager.ensure_server_running(server_config.listen_port)
+        except WireGuardDockerError as exc:
+            logger.error("Не удалось поднять WireGuard-сервер при старте: %s", exc)
+
+    def _rewrite_and_reload(self, server_config: WireGuardServerConfig) -> None:
+        peers = [
+            wireguard_config.PeerForConfig(name=p.name, public_key=p.public_key, allocated_ip=p.allocated_ip)
+            for p in self._repository.get_all_peers()
+        ]
+        server_conf_text = wireguard_config.render_server_config(
+            server_private_key=server_config.server_private_key,
+            listen_port=server_config.listen_port,
+            peers=peers,
+        )
+        wg_confs_dir = config.WG_CONFIG_DIR / "wg_confs"
+        wg_confs_dir.mkdir(parents=True, exist_ok=True)
+        (wg_confs_dir / f"{config.WG_INTERFACE_NAME}.conf").write_text(server_conf_text, encoding="utf-8")
+        self._manager.reload_config()
+
+    def add_peer(self, name: str) -> WireGuardPeer:
+        server_config = self._repository.get_server_config()
+        if server_config is None:
+            raise VpnServiceError("WireGuard-сервер ещё не настроен")
+
+        cleaned_name = name.strip()
+        if not cleaned_name:
+            raise VpnServiceError("Укажите имя устройства")
+
+        used_ips = self._repository.get_used_ips()
+        allocated_ip = wireguard_config.allocate_next_ip(server_config.subnet, used_ips)
+        client_private_key, client_public_key = crypto_utils.generate_wireguard_keypair()
+
+        client_conf_text = wireguard_config.render_client_config(
+            client_private_key=client_private_key,
+            client_allocated_ip=allocated_ip,
+            server_public_key=server_config.server_public_key,
+            server_endpoint_ip=server_config.endpoint_ip,
+            server_listen_port=server_config.listen_port,
+            dns=server_config.dns,
+        )
+
+        qr_filename = f"wg_{cleaned_name}_{allocated_ip.replace('.', '_')}.png"
+        try:
+            utils.generate_qr_code(client_conf_text, qr_filename)
+        except Exception as exc:
+            raise VpnServiceError(f"Не удалось сгенерировать QR-код: {exc}") from exc
+
+        try:
+            peer = self._repository.create_peer(
+                name=cleaned_name,
+                private_key=client_private_key,
+                public_key=client_public_key,
+                allocated_ip=allocated_ip,
+                config_text=client_conf_text,
+                qr_filename=qr_filename,
+            )
+        except AlreadyExistsError as exc:
+            utils.delete_qr_code(qr_filename)
+            raise VpnServiceError(str(exc)) from exc
+
+        try:
+            self._rewrite_and_reload(server_config)
+        except WireGuardDockerError as exc:
+            # Откатываем запись из БД и QR, чтобы не оставлять "невидимого" клиента.
+            self._repository.delete_peer(peer.id)
+            utils.delete_qr_code(qr_filename)
+            raise VpnServiceError(f"Не удалось применить конфигурацию: {exc}") from exc
+
+        return peer
+
+    def delete_peer(self, peer_id: int) -> None:
+        server_config = self._repository.get_server_config()
+        if server_config is None:
+            raise VpnServiceError("WireGuard-сервер ещё не настроен")
+
+        peer = self._repository.delete_peer(peer_id)
+        utils.delete_qr_code(peer.qr_filename)
+        try:
+            self._rewrite_and_reload(server_config)
+        except WireGuardDockerError as exc:
+            logger.error("Не удалось применить конфигурацию после удаления peer: %s", exc)
+            raise VpnServiceError(f"Peer удалён из базы, но применить конфигурацию не удалось: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Xray / VLESS
+# ---------------------------------------------------------------------------
+class XrayService:
+    """Оркестрирует настройку сервера и управление VLESS-клиентами Xray."""
+
+    def __init__(self) -> None:
+        self._repository = XrayRepository()
+        try:
+            self._manager = XrayManager()
+        except XrayDockerError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+    def get_server_config(self) -> XrayServerConfig | None:
+        return self._repository.get_server_config()
+
+    def get_status(self) -> str:
+        return self._manager.get_status()
+
+    def list_clients(self) -> list[VlessClient]:
+        return self._repository.get_all_clients()
+
+    def setup_server(self, *, listen_port: int, dest: str, server_name: str) -> XrayServerConfig:
+        """
+        Первоначальная настройка Xray-сервера: генерирует REALITY-ключи,
+        поднимает контейнер с пустым списком клиентов. При ошибке —
+        контейнер откатывается, запись в БД не создаётся.
+        """
+        try:
+            utils.validate_manual_port(listen_port)
+        except utils.PortUnavailableError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+        private_key, public_key = crypto_utils.generate_reality_keypair()
+        short_id = crypto_utils.generate_reality_short_id()
+
+        config_json = xray_config.render_server_config(
+            listen_port=listen_port, dest=dest, server_names=[server_name],
+            private_key=private_key, short_id=short_id, client_uuids=[],
+        )
+
+        try:
+            self._manager.ensure_server_running(listen_port, config_json)
+        except XrayDockerError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+        return self._repository.save_server_config(
+            listen_port=listen_port, dest=dest, server_names=server_name,
+            private_key=private_key, public_key=public_key, short_id=short_id,
+        )
+
+    def ensure_running_if_configured(self) -> None:
+        """Вызывается при старте приложения: если сервер уже был настроен ранее — поднимает контейнер."""
+        server_config = self._repository.get_server_config()
+        if server_config is None:
+            return
+        client_uuids = [c.client_uuid for c in self._repository.get_all_clients()]
+        config_json = xray_config.render_server_config(
+            listen_port=server_config.listen_port, dest=server_config.dest,
+            server_names=[server_config.server_names], private_key=server_config.private_key,
+            short_id=server_config.short_id, client_uuids=client_uuids,
+        )
+        try:
+            self._manager.ensure_server_running(server_config.listen_port, config_json)
+        except XrayDockerError as exc:
+            logger.error("Не удалось поднять Xray-сервер при старте: %s", exc)
+
+    def add_client(self, name: str) -> VlessClient:
+        server_config = self._repository.get_server_config()
+        if server_config is None:
+            raise VpnServiceError("Xray-сервер ещё не настроен")
+
+        cleaned_name = name.strip()
+        if not cleaned_name:
+            raise VpnServiceError("Укажите имя устройства")
+
+        client_uuid = crypto_utils.generate_client_uuid()
+
+        try:
+            server_ip = utils.get_server_public_ip()
+        except utils.PublicIPLookupError as exc:
+            raise VpnServiceError(str(exc)) from exc
+
+        vless_link = xray_config.build_vless_link(
+            client_uuid=client_uuid, server_ip=server_ip, listen_port=server_config.listen_port,
+            public_key=server_config.public_key, short_id=server_config.short_id,
+            server_name=server_config.server_names, remark=cleaned_name,
+        )
+
+        qr_filename = f"vless_{cleaned_name}_{client_uuid[:8]}.png"
+        try:
+            utils.generate_qr_code(vless_link, qr_filename)
+        except Exception as exc:
+            raise VpnServiceError(f"Не удалось сгенерировать QR-код: {exc}") from exc
+
+        try:
+            client = self._repository.create_client(
+                name=cleaned_name, client_uuid=client_uuid, vless_link=vless_link, qr_filename=qr_filename,
+            )
+        except AlreadyExistsError as exc:
+            utils.delete_qr_code(qr_filename)
+            raise VpnServiceError(str(exc)) from exc
+
+        try:
+            self._apply_client_list(server_config)
+        except XrayDockerError as exc:
+            self._repository.delete_client(client.id)
+            utils.delete_qr_code(qr_filename)
+            raise VpnServiceError(f"Не удалось применить конфигурацию: {exc}") from exc
+
+        return client
+
+    def delete_client(self, client_id: int) -> None:
+        server_config = self._repository.get_server_config()
+        if server_config is None:
+            raise VpnServiceError("Xray-сервер ещё не настроен")
+
+        client = self._repository.delete_client(client_id)
+        utils.delete_qr_code(client.qr_filename)
+        try:
+            self._apply_client_list(server_config)
+        except XrayDockerError as exc:
+            logger.error("Не удалось применить конфигурацию после удаления клиента: %s", exc)
+            raise VpnServiceError(f"Клиент удалён из базы, но применить конфигурацию не удалось: {exc}") from exc
+
+    def _apply_client_list(self, server_config: XrayServerConfig) -> None:
+        client_uuids = [c.client_uuid for c in self._repository.get_all_clients()]
+        config_json = xray_config.render_server_config(
+            listen_port=server_config.listen_port, dest=server_config.dest,
+            server_names=[server_config.server_names], private_key=server_config.private_key,
+            short_id=server_config.short_id, client_uuids=client_uuids,
+        )
+        self._manager.apply_config(config_json)

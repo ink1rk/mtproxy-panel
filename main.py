@@ -15,7 +15,9 @@ from starlette.middleware.sessions import SessionMiddleware
 import auth
 import config
 from database import init_db
+from log_routes import router as log_router
 from routes import router
+from vpn_routes import router as vpn_router
 
 
 def configure_logging() -> None:
@@ -45,6 +47,32 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 
+def _ensure_vpn_servers_running() -> None:
+    """
+    Если WireGuard и/или Xray уже были настроены ранее — поднимает их
+    контейнеры при старте панели (например, после перезагрузки сервера).
+    Ошибки не должны мешать запуску самой панели, поэтому перехватываются
+    и только логируются.
+    """
+    try:
+        from vpn_service import VpnServiceError, WireGuardService
+
+        WireGuardService().ensure_running_if_configured()
+    except VpnServiceError as exc:
+        logger.warning("WireGuard-сервер не удалось поднять при старте: %s", exc)
+    except Exception:  # noqa: BLE001 — сбой VPN-автозапуска не должен ронять панель
+        logger.exception("Неожиданная ошибка при автозапуске WireGuard")
+
+    try:
+        from vpn_service import VpnServiceError, XrayService
+
+        XrayService().ensure_running_if_configured()
+    except VpnServiceError as exc:
+        logger.warning("Xray-сервер не удалось поднять при старте: %s", exc)
+    except Exception:  # noqa: BLE001
+        logger.exception("Неожиданная ошибка при автозапуске Xray")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Запуск приложения '%s'", config.APP_TITLE)
@@ -64,6 +92,8 @@ async def lifespan(app: FastAPI):
         )
         logger.warning(banner)
 
+    _ensure_vpn_servers_running()
+
     yield
     logger.info("Остановка приложения '%s'", config.APP_TITLE)
 
@@ -80,3 +110,5 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory=str(config.STATIC_DIR)), name="static")
 app.include_router(router)
+app.include_router(vpn_router)
+app.include_router(log_router)

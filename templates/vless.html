@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% from "_navbar.html" import navbar %}
+{% block title %}VLESS — Control Panel{% endblock %}
+{% block body %}
+
+{{ navbar('vless', username) }}
+
+<div class="container-fluid px-4 py-4">
+
+    {% if server_config is none %}
+    <!-- ============== Сервер ещё не настроен: форма первичной настройки ============== -->
+    <div class="row justify-content-center">
+        <div class="col-lg-6">
+            <div class="card-surface p-4 p-md-5">
+                <div class="text-center mb-4">
+                    <i class="bi bi-diagram-3" style="font-size: 2.2rem; color: var(--brand);"></i>
+                    <h1 class="h4 mt-2 mb-0">Настройка VLESS + REALITY</h1>
+                    <p class="text-secondary small mb-0">
+                        Сервер ещё не настроен. REALITY-ключи будут сгенерированы
+                        автоматически — вам нужно только выбрать порт и маскировочный домен.
+                    </p>
+                </div>
+                <form method="post" action="/vless/setup">
+                    <label class="form-label small text-secondary">TCP-порт сервера</label>
+                    <input type="number" name="listen_port" class="form-control mb-3"
+                           value="{{ default_port }}" min="1" max="65535" required>
+
+                    <label class="form-label small text-secondary">Dest (сайт для маскировки, формат домен:порт)</label>
+                    <input type="text" name="dest" class="form-control mb-3" value="{{ default_dest }}" required>
+
+                    <label class="form-label small text-secondary">Server Name (SNI)</label>
+                    <input type="text" name="server_name" class="form-control mb-4" value="{{ default_server_name }}" required>
+
+                    <div class="form-text mb-3">
+                        Dest должен указывать на реальный популярный HTTPS-сайт
+                        (например, www.microsoft.com:443). Именно под него будет
+                        маскироваться VLESS-трафик.
+                    </div>
+
+                    <button type="submit" class="btn brand-gradient-btn text-white w-100 py-2">
+                        Настроить и запустить сервер
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    {% else %}
+    <!-- ============== Сервер настроен: список клиентов ============== -->
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-md-3">
+            <div class="stat-card">
+                <div class="stat-value">{{ clients|length }}</div>
+                <div class="stat-label">Клиентов</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="stat-card">
+                <div class="stat-value {% if status == 'running' %}text-success{% else %}text-warning{% endif %}" id="xrayServerStatus">
+                    {{ status }}
+                </div>
+                <div class="stat-label">Статус сервера</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="stat-card">
+                <div class="stat-value mono" style="font-size: 1.05rem;">:{{ server_config.listen_port }}</div>
+                <div class="stat-label">{{ server_config.server_names }}</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 d-flex align-items-stretch">
+            <button type="button" class="btn brand-gradient-btn text-white w-100 d-flex align-items-center justify-content-center gap-2"
+                    data-bs-toggle="modal" data-bs-target="#addClientModal">
+                <i class="bi bi-plus-circle"></i> Добавить клиента
+            </button>
+        </div>
+    </div>
+
+    {% if clients|length == 0 %}
+    <div class="card-surface p-5 text-center text-secondary">
+        <i class="bi bi-inboxes" style="font-size: 2rem;"></i>
+        <p class="mb-0 mt-2">Клиентов пока нет. Нажмите «Добавить клиента».</p>
+    </div>
+    {% else %}
+    <div class="card-surface p-0">
+        <div class="table-responsive">
+            <table class="table table-modern mb-0">
+                <thead>
+                    <tr>
+                        <th>Имя</th>
+                        <th>UUID</th>
+                        <th>Ссылка</th>
+                        <th>Создан</th>
+                        <th>QR</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for client in clients %}
+                    <tr>
+                        <td><strong>{{ client.name }}</strong></td>
+                        <td>
+                            <code class="mono text-truncate d-inline-block" style="max-width: 180px;" title="{{ client.client_uuid }}">{{ client.client_uuid }}</code>
+                        </td>
+                        <td>
+                            <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ client.vless_link }}" title="Скопировать vless:// ссылку"></i>
+                            <span class="text-secondary small">скопировать</span>
+                        </td>
+                        <td class="text-secondary small">{{ client.created_at[:19].replace("T", " ") }}</td>
+                        <td><img src="{{ client.qr_url }}" alt="QR" width="64" height="64" class="qr-thumb"></td>
+                        <td>
+                            <button type="button" class="btn btn-sm btn-outline-danger"
+                                    data-bs-toggle="modal" data-bs-target="#deleteClientModal"
+                                    data-delete-id="{{ client.id }}" data-delete-name="{{ client.name }}">
+                                <i class="bi bi-trash3"></i>
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+    {% endif %}
+</div>
+
+<!-- Модалка: добавить клиента (только имя — всё остальное автоматически) -->
+<div class="modal fade" id="addClientModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form method="post" action="/vless/clients" class="modal-content card-surface">
+            <div class="modal-header border-secondary-subtle">
+                <h5 class="modal-title">Новый VLESS-клиент</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label small text-secondary">Название клиента</label>
+                <input type="text" name="name" class="form-control" placeholder="например, ноутбук" required autofocus>
+                <div class="form-text">
+                    UUID и готовая vless:// ссылка будут сгенерированы автоматически.
+                </div>
+            </div>
+            <div class="modal-footer border-secondary-subtle">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="submit" class="btn brand-gradient-btn text-white">Добавить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Модалка: подтверждение удаления -->
+<div class="modal fade" id="deleteClientModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form method="post" id="deleteClientForm" class="modal-content card-surface">
+            <div class="modal-header border-secondary-subtle">
+                <h5 class="modal-title">Удалить клиента?</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                Клиент <strong id="deleteClientName"></strong> потеряет доступ немедленно.
+            </div>
+            <div class="modal-footer border-secondary-subtle">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="submit" class="btn btn-danger">Удалить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+    {% if error_message %}
+    <div class="toast align-items-center text-bg-danger border-0 show" role="alert">
+        <div class="d-flex">
+            <div class="toast-body">{{ error_message }}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    </div>
+    {% endif %}
+    {% if info_message %}
+    <div class="toast align-items-center text-bg-success border-0 show" role="alert">
+        <div class="d-flex">
+            <div class="toast-body">{{ info_message }}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    const deleteClientModal = document.getElementById('deleteClientModal');
+    if (deleteClientModal) {
+        deleteClientModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            const id = button.getAttribute('data-delete-id');
+            const name = button.getAttribute('data-delete-name');
+            document.getElementById('deleteClientName').textContent = name;
+            document.getElementById('deleteClientForm').setAttribute('action', '/vless/clients/' + id + '/delete');
+        });
+    }
+
+    document.querySelectorAll('.copy-btn').forEach(function (el) {
+        el.addEventListener('click', function () {
+            navigator.clipboard.writeText(el.getAttribute('data-copy')).then(function () {
+                const original = el.className;
+                el.classList.remove('bi-clipboard');
+                el.classList.add('bi-check2', 'text-success');
+                setTimeout(function () { el.className = original; }, 1200);
+            });
+        });
+    });
+
+    function refreshXrayStatus() {
+        fetch('/api/vpn-status', { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+                if (!data) return;
+                const el = document.getElementById('xrayServerStatus');
+                if (!el) return;
+                el.textContent = data.vless;
+                el.className = 'stat-value ' + (data.vless === 'running' ? 'text-success' : 'text-warning');
+            })
+            .catch(function () {});
+    }
+    setInterval(refreshXrayStatus, 6000);
+</script>
+{% endblock %}

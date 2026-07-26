@@ -128,3 +128,80 @@ EXPECTED_ADMIN_USERS_COLUMNS: dict[str, str] = {
     "password_salt": "TEXT NOT NULL",
     "created_at": "TEXT NOT NULL",
 }
+
+# ---------------------------------------------------------------------------
+# WireGuard VPN
+# ---------------------------------------------------------------------------
+WG_CONFIG_DIR: Path = DATA_DIR / "wireguard"
+WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+WG_DOCKER_IMAGE: str = "lscr.io/linuxserver/wireguard:latest"
+WG_CONTAINER_NAME: str = "wg_server"
+WG_INTERFACE_NAME: str = "wg0"
+WG_DEFAULT_PORT: int = 51820
+WG_DEFAULT_SUBNET: str = "10.66.0.0/24"
+WG_SERVER_TUNNEL_IP: str = "10.66.0.1"
+WG_DEFAULT_DNS: str = "1.1.1.1"
+WG_KEEPALIVE_SECONDS: int = 25
+DOCKER_WG_START_TIMEOUT_SECONDS: float = 20.0
+
+WG_SERVER_CONFIG_TABLE_NAME: str = "wg_server_config"
+EXPECTED_WG_SERVER_CONFIG_COLUMNS: dict[str, str] = {
+    "id": "INTEGER PRIMARY KEY CHECK (id = 1)",
+    "server_private_key": "TEXT NOT NULL",
+    "server_public_key": "TEXT NOT NULL",
+    "listen_port": "INTEGER NOT NULL",
+    "subnet": "TEXT NOT NULL",
+    "endpoint_ip": "TEXT NOT NULL",
+    "dns": "TEXT NOT NULL",
+    "created_at": "TEXT NOT NULL",
+}
+
+WG_PEERS_TABLE_NAME: str = "wg_peers"
+EXPECTED_WG_PEERS_COLUMNS: dict[str, str] = {
+    "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+    "name": "TEXT NOT NULL UNIQUE",
+    "private_key": "TEXT NOT NULL",
+    "public_key": "TEXT NOT NULL",
+    "allocated_ip": "TEXT NOT NULL UNIQUE",
+    "config_text": "TEXT NOT NULL",
+    "qr_filename": "TEXT NOT NULL",
+    "created_at": "TEXT NOT NULL",
+}
+
+# ---------------------------------------------------------------------------
+# Xray / VLESS+REALITY VPN
+# ---------------------------------------------------------------------------
+XRAY_CONFIG_DIR: Path = DATA_DIR / "xray"
+XRAY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+XRAY_DOCKER_IMAGE: str = "teddysun/xray:latest"
+XRAY_CONTAINER_NAME: str = "xray_server"
+XRAY_DEFAULT_PORT: int = 8443
+XRAY_DEFAULT_DEST: str = "www.microsoft.com:443"
+XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.microsoft.com",)
+XRAY_FLOW: str = "xtls-rprx-vision"
+DOCKER_XRAY_START_TIMEOUT_SECONDS: float = 20.0
+XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
+
+XRAY_SERVER_CONFIG_TABLE_NAME: str = "xray_server_config"
+EXPECTED_XRAY_SERVER_CONFIG_COLUMNS: dict[str, str] = {
+    "id": "INTEGER PRIMARY KEY CHECK (id = 1)",
+    "listen_port": "INTEGER NOT NULL",
+    "dest": "TEXT NOT NULL",
+    "server_names": "TEXT NOT NULL",
+    "private_key": "TEXT NOT NULL",
+    "public_key": "TEXT NOT NULL",
+    "short_id": "TEXT NOT NULL",
+    "created_at": "TEXT NOT NULL",
+}
+
+VLESS_CLIENTS_TABLE_NAME: str = "vless_clients"
+EXPECTED_VLESS_CLIENTS_COLUMNS: dict[str, str] = {
+    "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+    "name": "TEXT NOT NULL UNIQUE",
+    "client_uuid": "TEXT NOT NULL UNIQUE",
+    "vless_link": "TEXT NOT NULL",
+    "qr_filename": "TEXT NOT NULL",
+    "created_at": "TEXT NOT NULL",
+}

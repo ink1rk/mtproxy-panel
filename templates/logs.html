@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "_navbar.html" import navbar %}
+{% block title %}Логи — Control Panel{% endblock %}
+{% block body %}
+
+{{ navbar('logs', username) }}
+
+<div class="container-fluid px-4 py-4">
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+        <div class="input-group" style="max-width: 280px;">
+            <span class="input-group-text bg-transparent border-secondary-subtle"><i class="bi bi-search"></i></span>
+            <input type="text" id="logSearch" class="form-control" placeholder="Поиск по тексту...">
+        </div>
+        <select id="logLevel" class="form-select" style="max-width: 160px;">
+            <option value="">Все уровни</option>
+            <option value="INFO">INFO</option>
+            <option value="WARNING">WARNING</option>
+            <option value="ERROR">ERROR</option>
+            <option value="CRITICAL">CRITICAL</option>
+        </select>
+        <div class="form-check form-switch ms-2">
+            <input class="form-check-input" type="checkbox" id="autoRefreshToggle" checked>
+            <label class="form-check-label small text-secondary" for="autoRefreshToggle">Автообновление</label>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" id="refreshNowBtn">
+            <i class="bi bi-arrow-clockwise"></i> Обновить сейчас
+        </button>
+    </div>
+
+    <div class="card-surface p-3">
+        <pre id="logOutput" class="mono mb-0" style="max-height: 70vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">Загрузка...</pre>
+    </div>
+</div>
+
+<script>
+    const logOutput = document.getElementById('logOutput');
+    const logSearch = document.getElementById('logSearch');
+    const logLevel = document.getElementById('logLevel');
+    const autoRefreshToggle = document.getElementById('autoRefreshToggle');
+    const refreshNowBtn = document.getElementById('refreshNowBtn');
+
+    function colorizeLine(line) {
+        if (line.includes('| ERROR') || line.includes('| CRITICAL')) return '<span style="color:#ff6b6b;">' + line + '</span>';
+        if (line.includes('| WARNING')) return '<span style="color:#ffd166;">' + line + '</span>';
+        return '<span style="color:#c9d1d9;">' + line + '</span>';
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function loadLogs() {
+        const params = new URLSearchParams({ lines: '300' });
+        if (logSearch.value.trim()) params.set('q', logSearch.value.trim());
+        if (logLevel.value) params.set('level', logLevel.value);
+
+        fetch('/api/logs?' + params.toString(), { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+                if (!data) return;
+                const wasAtBottom = logOutput.scrollTop + logOutput.clientHeight >= logOutput.scrollHeight - 20;
+                if (data.lines.length === 0) {
+                    logOutput.innerHTML = '<span class="text-secondary">Нет записей, соответствующих фильтру.</span>';
+                    return;
+                }
+                logOutput.innerHTML = data.lines.map(function (line) {
+                    return colorizeLine(escapeHtml(line));
+                }).join('\n');
+                if (wasAtBottom) {
+                    logOutput.scrollTop = logOutput.scrollHeight;
+                }
+            })
+            .catch(function () {
+                logOutput.textContent = 'Не удалось загрузить логи.';
+            });
+    }
+
+    loadLogs();
+    logOutput.scrollTop = logOutput.scrollHeight;
+
+    logSearch.addEventListener('input', loadLogs);
+    logLevel.addEventListener('change', loadLogs);
+    refreshNowBtn.addEventListener('click', loadLogs);
+
+    setInterval(function () {
+        if (autoRefreshToggle.checked) loadLogs();
+    }, 5000);
+</script>
+{% endblock %}

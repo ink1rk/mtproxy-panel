@@ -224,6 +224,8 @@ ensure_docker() {
 ensure_project_structure() {
     log "Создаю структуру каталогов проекта."
     mkdir -p "${SCRIPT_DIR}/data" \
+             "${SCRIPT_DIR}/data/wireguard/wg_confs" \
+             "${SCRIPT_DIR}/data/xray" \
              "${SCRIPT_DIR}/logs" \
              "${SCRIPT_DIR}/static/qr" \
              "${SCRIPT_DIR}/templates"
@@ -471,6 +473,41 @@ verify_docker_ps() {
 }
 
 # ---------------------------------------------------------------------------
+# 7. WireGuard: проверка поддержки ядром (best-effort, не фатально —
+#    контейнер WireGuard-сервера сам умеет подгрузить модуль благодаря
+#    capability SYS_MODULE, если ядро поддерживает WireGuard).
+# ---------------------------------------------------------------------------
+ensure_wireguard_kernel_support() {
+    if as_root modprobe wireguard 2>/dev/null; then
+        log "Модуль ядра WireGuard доступен."
+    elif [[ -d /sys/module/wireguard ]]; then
+        log "Модуль ядра WireGuard уже загружен."
+    else
+        log "ВНИМАНИЕ: не удалось подтвердить поддержку WireGuard ядром хоста. " \
+            "Обычно это не проблема на Ubuntu Server (ядро >= 5.6 включает WireGuard " \
+            "изначально) — контейнер WireGuard-сервера попробует загрузить модуль сам " \
+            "при первом запуске из панели."
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# 8. Firewall: открываем порт самой панели, если активен ufw. Порты,
+#    публикуемые Docker'ом (-p) для MTProxy/WireGuard/Xray контейнеров,
+#    ufw обычно не блокирует — Docker управляет своими iptables-правилами
+#    независимо от ufw, поэтому их отдельно открывать не требуется.
+# ---------------------------------------------------------------------------
+ensure_firewall_allows_panel() {
+    if ! command -v ufw >/dev/null 2>&1; then
+        return
+    fi
+    if ! as_root ufw status 2>/dev/null | grep -qi "Status: active"; then
+        return
+    fi
+    log "Обнаружен активный ufw — открываю порт панели ${APP_PORT}/tcp."
+    as_root ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 main() {
@@ -478,6 +515,8 @@ main() {
     ensure_repo_up_to_date
     ensure_python
     ensure_docker
+    ensure_wireguard_kernel_support
+    ensure_firewall_allows_panel
     ensure_project_structure
     ensure_venv
     stop_existing_instance

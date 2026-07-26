@@ -6,6 +6,10 @@ data/*.db-journal
 data/*.db-wal
 data/*.db-shm
 data/session_secret.key
+data/wireguard/*
+!data/wireguard/.gitkeep
+data/xray/*
+!data/xray/.gitkeep
 logs/*.log*
 static/qr/*.png
 run.pid
