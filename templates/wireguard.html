@@ -84,6 +84,7 @@
                         <th>Имя</th>
                         <th>VPN-адрес</th>
                         <th>Public Key</th>
+                        <th>Последнее подключение</th>
                         <th>Создан</th>
                         <th>QR</th>
                         <th></th>
@@ -100,6 +101,7 @@
                                 <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ peer.public_key }}" title="Скопировать"></i>
                             </div>
                         </td>
+                        <td class="text-secondary small">{{ connection_labels.get(peer.id, "нет подключений") }}</td>
                         <td class="text-secondary small">{{ peer.created_at[:19].replace("T", " ") }}</td>
                         <td><img src="{{ peer.qr_url }}" alt="QR" width="64" height="64" class="qr-thumb"></td>
                         <td>

@@ -55,6 +55,7 @@ async def wireguard_page(request: Request) -> HTMLResponse:
     server_config = None
     peers = []
     status = "missing"
+    connection_labels: dict[int, str] = {}
 
     service, init_error = _try_get_wg_service()
     if init_error is not None:
@@ -65,6 +66,7 @@ async def wireguard_page(request: Request) -> HTMLResponse:
         if server_config is not None:
             peers = service.list_peers()
             status = service.get_status()
+            connection_labels = service.get_peer_connection_labels()
 
     return templates.TemplateResponse(
         request=request,
@@ -73,6 +75,7 @@ async def wireguard_page(request: Request) -> HTMLResponse:
             "server_config": server_config,
             "peers": peers,
             "status": status,
+            "connection_labels": connection_labels,
             "error_message": error_message,
             "info_message": info_message,
             "username": request.session.get(auth.SESSION_USER_KEY),

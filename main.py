@@ -20,17 +20,36 @@ from routes import router
 from vpn_routes import router as vpn_router
 
 
+class TruncatingFileHandler(RotatingFileHandler):
+    """
+    Как RotatingFileHandler, но вместо переименования в app.log.1/.2/... при
+    достижении maxBytes просто обрезает файл до нуля и продолжает писать в
+    него же. Никаких архивных файлов на диске не остаётся — по требованию,
+    чтобы логи не копились, а перезаписывались.
+    """
+
+    def doRollover(self) -> None:
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        # Полностью обрезаем файл (открытие в режиме 'w' у обычного файла
+        # логов безопасно: это единственный писатель в него).
+        open(self.baseFilename, "w", encoding=self.encoding or "utf-8").close()
+        if not self.delay:
+            self.stream = self._open()
+
+
 def configure_logging() -> None:
-    """Настраивает логирование в файл (с ротацией) и в консоль."""
+    """Настраивает логирование в файл (с обрезкой при превышении размера) и в консоль."""
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
     formatter = logging.Formatter(config.LOG_FORMAT)
 
-    file_handler = RotatingFileHandler(
+    file_handler = TruncatingFileHandler(
         filename=config.LOG_FILE_PATH,
         maxBytes=config.LOG_MAX_BYTES,
-        backupCount=config.LOG_BACKUP_COUNT,
+        backupCount=1,  # значение не используется TruncatingFileHandler.doRollover, но должно быть > 0
         encoding="utf-8",
     )
     file_handler.setFormatter(formatter)

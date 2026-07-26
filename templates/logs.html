@@ -7,6 +7,9 @@
 
 <div class="container-fluid px-4 py-4">
     <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+        <select id="logSource" class="form-select" style="max-width: 240px;">
+            <option value="panel">Панель (app.log)</option>
+        </select>
         <div class="input-group" style="max-width: 280px;">
             <span class="input-group-text bg-transparent border-secondary-subtle"><i class="bi bi-search"></i></span>
             <input type="text" id="logSearch" class="form-control" placeholder="Поиск по тексту...">
@@ -26,6 +29,11 @@
             <i class="bi bi-arrow-clockwise"></i> Обновить сейчас
         </button>
     </div>
+    <div class="form-text mb-3">
+        «Панель» — лог самого приложения. Остальные источники — живые логи
+        Docker-контейнеров MTProxy/WireGuard/Xray, включая соединения клиентов
+        (для Xray — уровень «info» показывает каждое принятое подключение).
+    </div>
 
     <div class="card-surface p-3">
         <pre id="logOutput" class="mono mb-0" style="max-height: 70vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">Загрузка...</pre>
@@ -34,10 +42,33 @@
 
 <script>
     const logOutput = document.getElementById('logOutput');
+    const logSource = document.getElementById('logSource');
     const logSearch = document.getElementById('logSearch');
     const logLevel = document.getElementById('logLevel');
     const autoRefreshToggle = document.getElementById('autoRefreshToggle');
     const refreshNowBtn = document.getElementById('refreshNowBtn');
+
+    function loadSources() {
+        fetch('/api/log-sources', { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+                if (!data) return;
+                const current = logSource.value;
+                logSource.innerHTML = '';
+                data.sources.forEach(function (s) {
+                    const opt = document.createElement('option');
+                    opt.value = s.name;
+                    opt.textContent = s.label;
+                    logSource.appendChild(opt);
+                });
+                // Сохраняем выбор пользователя, если источник всё ещё существует
+                // (например, MTProxy-контейнер не был удалён между обновлениями списка).
+                if ([...logSource.options].some(function (o) { return o.value === current; })) {
+                    logSource.value = current;
+                }
+            })
+            .catch(function () {});
+    }
 
     function colorizeLine(line) {
         if (line.includes('| ERROR') || line.includes('| CRITICAL')) return '<span style="color:#ff6b6b;">' + line + '</span>';
@@ -52,7 +83,7 @@
     }
 
     function loadLogs() {
-        const params = new URLSearchParams({ lines: '300' });
+        const params = new URLSearchParams({ lines: '300', source: logSource.value || 'panel' });
         if (logSearch.value.trim()) params.set('q', logSearch.value.trim());
         if (logLevel.value) params.set('level', logLevel.value);
 
@@ -77,14 +108,17 @@
             });
     }
 
+    loadSources();
     loadLogs();
     logOutput.scrollTop = logOutput.scrollHeight;
 
+    logSource.addEventListener('change', loadLogs);
     logSearch.addEventListener('input', loadLogs);
     logLevel.addEventListener('change', loadLogs);
     refreshNowBtn.addEventListener('click', loadLogs);
 
     setInterval(function () {
+        loadSources();
         if (autoRefreshToggle.checked) loadLogs();
     }, 5000);
 </script>

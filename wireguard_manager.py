@@ -95,7 +95,18 @@ class WireGuardManager:
                     "net.ipv4.ip_forward": "1",
                 },
                 ports={f"{listen_port}/udp": listen_port},
-                environment={"PEERS": "0", "PUID": "0", "PGID": "0"},
+                # ВАЖНО: PEERS не задаём вовсе (а не "0"!). У linuxserver/wireguard
+                # ЛЮБОЕ непустое значение PEERS (включая "0") включает "серверный"
+                # режим — образ САМ генерирует новый wg0.conf (со своим случайным
+                # приватным ключом и служебной подсетью 10.13.13.0/24!), полностью
+                # затирая наш файл ДО первого 'wg-quick up'. Из-за этого реальный
+                # запущенный интерфейс не совпадал ни по ключу, ни по подсети с тем,
+                # что панель хранит в БД и отдаёт клиентам — туннель не мог поднять
+                # соединение и/или не мог маршрутизировать трафик пиров (не было
+                # маршрута до подсети пиров в таблице маршрутизации контейнера).
+                # Официально документированный "bare/client mode" — не задавать
+                # PEERS вообще и просто положить готовый конфиг в wg_confs/*.conf.
+                environment={"PUID": "0", "PGID": "0"},
                 volumes={str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"}},
             )
         except APIError as exc:
@@ -137,6 +148,37 @@ class WireGuardManager:
                 f"wg syncconf завершился с ошибкой (код {exit_code}): {output.decode('utf-8', 'replace')}"
             )
         logger.info("Конфигурация WireGuard применена на горячую (wg syncconf)")
+
+    def get_peer_last_handshakes(self) -> dict[str, int]:
+        """
+        Возвращает {public_key: unix_timestamp последнего handshake}. WireGuard
+        не пишет лог о каждом подключении (это не TCP-прокси, а UDP-туннель без
+        событийного протокола) — время последнего handshake — самый прямой
+        показатель "жив ли клиент" ("0" из вывода wg означает "ни разу").
+        """
+        container = self._get_container()
+        if container is None:
+            return {}
+        try:
+            exit_code, output = container.exec_run(
+                ["wg", "show", config.WG_INTERFACE_NAME, "latest-handshakes"]
+            )
+        except APIError:
+            return {}
+        if exit_code != 0:
+            return {}
+
+        result: dict[str, int] = {}
+        for line in output.decode("utf-8", "replace").splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            public_key, timestamp = parts
+            try:
+                result[public_key] = int(timestamp)
+            except ValueError:
+                continue
+        return result
 
     def remove_server(self) -> None:
         """Полностью удаляет контейнер WireGuard-сервера (для полного сброса VPN)."""

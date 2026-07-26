@@ -23,7 +23,10 @@ def render_server_config(
 ) -> dict:
     """Строит полный config.json для Xray-сервера с текущим списком клиентов."""
     return {
-        "log": {"loglevel": "warning"},
+        # "info" — чтобы в docker-логах контейнера было видно реальные соединения
+        # (accepted/dialing/domain) для просмотра в веб-логах панели; "warning"
+        # такие записи полностью скрывает (это уровень ошибок, не событий).
+        "log": {"loglevel": "info"},
         "inbounds": [
             {
                 "listen": "0.0.0.0",

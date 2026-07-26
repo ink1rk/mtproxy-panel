@@ -93,8 +93,10 @@ MIN_PASSWORD_LENGTH: int = 8
 # ---------------------------------------------------------------------------
 # Логирование
 # ---------------------------------------------------------------------------
-LOG_MAX_BYTES: int = 5 * 1024 * 1024
-LOG_BACKUP_COUNT: int = 5
+# Файл лога не копится бесконечно и не хранит архив старых версий (app.log.1,
+# .2, ...) — по достижении LOG_MAX_BYTES он просто обрезается и пишется заново
+# (см. main.py: TruncatingFileHandler).
+LOG_MAX_BYTES: int = 10 * 1024 * 1024
 LOG_FORMAT: str = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 
 # ---------------------------------------------------------------------------
@@ -178,8 +180,19 @@ XRAY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 XRAY_DOCKER_IMAGE: str = "teddysun/xray:latest"
 XRAY_CONTAINER_NAME: str = "xray_server"
 XRAY_DEFAULT_PORT: int = 8443
-XRAY_DEFAULT_DEST: str = "www.microsoft.com:443"
-XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.microsoft.com",)
+# ВАЖНО: dest/serverName должны указывать на реальный сайт с TLS-сертификатом,
+# чей TLS Certificate record укладывается в жёсткий лимит Xray-core (8192 байта,
+# https://github.com/XTLS/Xray-core/issues/6356). www.microsoft.com ранее стоял
+# тут по умолчанию, но у него из-за OCSP-stapling запись сертификата ~8273 байта —
+# REALITY-хендшейк со ЛЮБЫМ клиентом гарантированно проваливался с ошибкой
+# "processed invalid connection ... handshake did not complete successfully",
+# независимо от корректности ключей/UUID/shortId. Проверено end-to-end реальным
+# VLESS-клиентом: с www.cloudflare.com (маленький сертификат) туннель поднимается
+# и передаёт трафик; с www.microsoft.com — нет, ни разу. Если меняете dest на
+# что-то своё — выбирайте популярный сайт с TLS 1.3 и небольшим сертификатом
+# (без длинных цепочек/OCSP-stapling), иначе получите ту же ошибку.
+XRAY_DEFAULT_DEST: str = "www.cloudflare.com:443"
+XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
 XRAY_FLOW: str = "xtls-rprx-vision"
 DOCKER_XRAY_START_TIMEOUT_SECONDS: float = 20.0
 XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
