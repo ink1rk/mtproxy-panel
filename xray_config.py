@@ -19,9 +19,16 @@ def render_server_config(
     server_names: list[str],
     private_key: str,
     short_id: str,
-    client_uuids: list[str],
+    clients: list[tuple[str, str]],
 ) -> dict:
-    """Строит полный config.json для Xray-сервера с текущим списком клиентов."""
+    """
+    Строит полный config.json для Xray-сервера с текущим списком клиентов.
+
+    clients — список пар (client_uuid, name). Поле 'email' в клиенте Xray
+    используется ИМЕННО для идентификации в access-логах (Xray подписывает
+    строку лога значением email, если оно задано) — без него в логах видно
+    только факт подключения, но не то, какой именно клиент его сделал.
+    """
     return {
         # "info" — чтобы в docker-логах контейнера было видно реальные соединения
         # (accepted/dialing/domain) для просмотра в веб-логах панели; "warning"
@@ -34,8 +41,8 @@ def render_server_config(
                 "protocol": "vless",
                 "settings": {
                     "clients": [
-                        {"id": client_uuid, "flow": config.XRAY_FLOW}
-                        for client_uuid in client_uuids
+                        {"id": client_uuid, "flow": config.XRAY_FLOW, "email": name}
+                        for client_uuid, name in clients
                     ],
                     "decryption": "none",
                 },

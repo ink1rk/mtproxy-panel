@@ -271,7 +271,7 @@ class XrayService:
 
         config_json = xray_config.render_server_config(
             listen_port=listen_port, dest=dest, server_names=[server_name],
-            private_key=private_key, short_id=short_id, client_uuids=[],
+            private_key=private_key, short_id=short_id, clients=[],
         )
 
         try:
@@ -289,11 +289,11 @@ class XrayService:
         server_config = self._repository.get_server_config()
         if server_config is None:
             return
-        client_uuids = [c.client_uuid for c in self._repository.get_all_clients()]
+        clients_for_config = [(c.client_uuid, c.name) for c in self._repository.get_all_clients()]
         config_json = xray_config.render_server_config(
             listen_port=server_config.listen_port, dest=server_config.dest,
             server_names=[server_config.server_names], private_key=server_config.private_key,
-            short_id=server_config.short_id, client_uuids=client_uuids,
+            short_id=server_config.short_id, clients=clients_for_config,
         )
         try:
             self._manager.ensure_server_running(server_config.listen_port, config_json)
@@ -383,10 +383,10 @@ class XrayService:
             logger.warning("Не удалось удалить контейнер Xray при сбросе конфигурации: %s", exc)
 
     def _apply_client_list(self, server_config: XrayServerConfig) -> None:
-        client_uuids = [c.client_uuid for c in self._repository.get_all_clients()]
+        clients_for_config = [(c.client_uuid, c.name) for c in self._repository.get_all_clients()]
         config_json = xray_config.render_server_config(
             listen_port=server_config.listen_port, dest=server_config.dest,
             server_names=[server_config.server_names], private_key=server_config.private_key,
-            short_id=server_config.short_id, client_uuids=client_uuids,
+            short_id=server_config.short_id, clients=clients_for_config,
         )
         self._manager.apply_config(config_json)
