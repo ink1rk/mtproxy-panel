@@ -41,7 +41,7 @@ def render_server_config(
                 "protocol": "vless",
                 "settings": {
                     "clients": [
-                        {"id": client_uuid, "flow": config.XRAY_FLOW, "email": name}
+                        {"id": client_uuid, "email": name, **({"flow": config.XRAY_FLOW} if config.XRAY_FLOW else {})}
                         for client_uuid, name in clients
                     ],
                     "decryption": "none",
@@ -87,7 +87,9 @@ def build_vless_link(
     """
     params = (
         f"type=tcp&security=reality&pbk={public_key}&fp=chrome"
-        f"&sni={server_name}&sid={short_id}&flow={config.XRAY_FLOW}"
+        f"&sni={server_name}&sid={short_id}"
     )
+    if config.XRAY_FLOW:
+        params += f"&flow={config.XRAY_FLOW}"
     remark_encoded = quote(remark, safe="")
     return f"vless://{client_uuid}@{server_ip}:{listen_port}?{params}#{remark_encoded}"

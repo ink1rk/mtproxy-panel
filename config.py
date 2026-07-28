@@ -192,7 +192,14 @@ XRAY_DEFAULT_PORT: int = 8443
 # (без длинных цепочек/OCSP-stapling), иначе получите ту же ошибку.
 XRAY_DEFAULT_DEST: str = "www.cloudflare.com:443"
 XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
-XRAY_FLOW: str = "xtls-rprx-vision"
+# Пусто = "no flow" (обычный REALITY без XTLS Vision). Есть подтверждённые
+# случаи, когда именно паттерн трафика xtls-rprx-vision (не REALITY в целом)
+# избирательно блокируется DPI в некоторых регионах, хотя обычный TLS-трафик
+# проходит нормально (см. github.com/XTLS/Xray-core/issues/1615). Vision даёт
+# прирост производительности за счёт Linux splice(), но в приоритете сначала
+# факт работоспособности, а не скорость — поэтому по умолчанию выключен.
+# Включить обратно: XRAY_FLOW = "xtls-rprx-vision".
+XRAY_FLOW: str = ""
 DOCKER_XRAY_START_TIMEOUT_SECONDS: float = 20.0
 XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
 
