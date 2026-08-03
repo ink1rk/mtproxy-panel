@@ -166,6 +166,7 @@ class WireGuardService:
             logger.error("Не удалось поднять WireGuard-сервер при старте: %s", exc)
 
     def _write_server_conf(self, server_config: WireGuardServerConfig) -> None:
+        self._manager.ensure_host_config_writable()
         peers = [
             wireguard_config.PeerForConfig(name=p.name, public_key=p.public_key, allocated_ip=p.allocated_ip)
             for p in self._repository.get_all_peers()
@@ -179,6 +180,7 @@ class WireGuardService:
         wg_confs_dir = config.WG_CONFIG_DIR / "wg_confs"
         wg_confs_dir.mkdir(parents=True, exist_ok=True)
         (wg_confs_dir / f"{config.WG_INTERFACE_NAME}.conf").write_text(server_conf_text, encoding="utf-8")
+        self._manager.ensure_host_config_writable()
 
     def _rewrite_and_reload(self, server_config: WireGuardServerConfig) -> None:
         self._write_server_conf(server_config)

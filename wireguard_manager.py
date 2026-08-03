@@ -17,7 +17,9 @@ wg_confs/wg0.conf, который полностью формирует и об�
 from __future__ import annotations
 
 import logging
+import os
 import time
+from pathlib import Path
 
 import docker
 from docker.errors import APIError, NotFound
@@ -83,6 +85,7 @@ class WireGuardManager:
         if container is not None:
             container.reload()
             if container.status == "running":
+                self.ensure_host_config_writable()
                 return
             logger.info("Контейнер WireGuard существует, но не запущен — запускаю")
             try:
@@ -90,6 +93,7 @@ class WireGuardManager:
             except APIError as exc:
                 raise WireGuardDockerError(f"Не удалось запустить контейнер WireGuard: {exc}") from exc
             self._wait_running(container)
+            self.ensure_host_config_writable()
             return
 
         logger.info("Создаю контейнер WireGuard-сервера на порту %d/udp", listen_port)
@@ -124,6 +128,36 @@ class WireGuardManager:
             raise WireGuardDockerError(f"Не удалось создать контейнер WireGuard: {exc}") from exc
 
         self._wait_running(container)
+        self.ensure_host_config_writable()
+
+    def ensure_host_config_writable(self) -> None:
+        """
+        linuxserver/wireguard после старта chown'ит /config на внутреннего
+        пользователя образа — после этого процесс панели (даже если он
+        создал файлы) может получить Permission denied при записи wg0.conf.
+        Возвращаем a+rwX на смонтированную директорию через docker exec
+        (нужен root внутри контейнера) и дублируем chmod на хосте.
+        """
+        container = self._get_container()
+        if container is not None:
+            try:
+                container.reload()
+                if container.status == "running":
+                    container.exec_run(["chmod", "-R", "a+rwX", "/config"])
+            except APIError as exc:
+                logger.warning("Не удалось chmod /config внутри WireGuard-контейнера: %s", exc)
+
+        root = Path(config.WG_CONFIG_DIR)
+        try:
+            if root.exists():
+                os.chmod(root, 0o777)
+                for path in root.rglob("*"):
+                    try:
+                        os.chmod(path, 0o777 if path.is_dir() else 0o666)
+                    except OSError:
+                        continue
+        except OSError as exc:
+            logger.warning("Не удалось chmod %s на хосте: %s", root, exc)
 
     def _wait_running(self, container: Container) -> None:
         deadline = time.monotonic() + config.DOCKER_WG_START_TIMEOUT_SECONDS

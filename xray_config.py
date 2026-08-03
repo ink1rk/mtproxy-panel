@@ -56,6 +56,9 @@ def render_server_config(
                         "serverNames": server_names,
                         "privateKey": private_key,
                         "shortIds": [short_id],
+                        # См. config.XRAY_MIN_CLIENT_VER — без явного значения
+                        # свежий Xray-core режет обычные мобильные клиенты.
+                        "minClientVer": config.XRAY_MIN_CLIENT_VER,
                     },
                 },
                 "sniffing": {

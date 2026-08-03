@@ -200,6 +200,14 @@ XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
 # Пустая строка = "no flow" (plain REALITY) — оставляем как опцию на случай
 # реальной блокировки Vision в конкретной сети.
 XRAY_FLOW: str = "xtls-rprx-vision"
+# С Xray-core >= 26.7.11 пустой minClientVer больше НЕ означает «принимать
+# любой клиент»: ядро подставляет дефолт "26.3.27" и молча отправляет более
+# старые клиенты (типичные сборки v2rayNG / NekoBox / Shadowrocket) на
+# fallback-dest — TLS handshake «успешен», а прокси-трафика 0 байт. Это как
+# раз симптом, из-за которого Vision ошибочно отключали «из-за DPI».
+# Явно ставим низкий порог, чтобы панель работала с обычными мобильными
+# клиентами без принудительного обновления ядра на телефоне.
+XRAY_MIN_CLIENT_VER: str = "1.0.0"
 DOCKER_XRAY_START_TIMEOUT_SECONDS: float = 20.0
 XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
 
