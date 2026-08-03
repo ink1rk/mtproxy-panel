@@ -56,6 +56,7 @@ async def wireguard_page(request: Request) -> HTMLResponse:
     peers = []
     status = "missing"
     connection_labels: dict[int, str] = {}
+    traffic_labels: dict[int, str] = {}
 
     service, init_error = _try_get_wg_service()
     if init_error is not None:
@@ -67,6 +68,7 @@ async def wireguard_page(request: Request) -> HTMLResponse:
             peers = service.list_peers()
             status = service.get_status()
             connection_labels = service.get_peer_connection_labels()
+            traffic_labels = service.get_peer_traffic_labels()
 
     return templates.TemplateResponse(
         request=request,
@@ -76,6 +78,7 @@ async def wireguard_page(request: Request) -> HTMLResponse:
             "peers": peers,
             "status": status,
             "connection_labels": connection_labels,
+            "traffic_labels": traffic_labels,
             "error_message": error_message,
             "info_message": info_message,
             "username": request.session.get(auth.SESSION_USER_KEY),
@@ -270,7 +273,7 @@ async def vless_setup(
     if not cleaned_port.isdigit():
         return _redirect_with_error("/vless", "Укажите корректный номер порта")
     if not dest.strip() or ":" not in dest:
-        return _redirect_with_error("/vless", "Укажите dest в формате домен:порт, например www.microsoft.com:443")
+        return _redirect_with_error("/vless", "Укажите dest в формате домен:порт, например www.cloudflare.com:443")
 
     service, init_error = _try_get_xray_service()
     if init_error is not None:

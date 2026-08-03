@@ -192,16 +192,26 @@ XRAY_DEFAULT_PORT: int = 8443
 # (без длинных цепочек/OCSP-stapling), иначе получите ту же ошибку.
 XRAY_DEFAULT_DEST: str = "www.cloudflare.com:443"
 XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
-# Пусто = "no flow" (обычный REALITY без XTLS Vision). Есть подтверждённые
-# случаи, когда именно паттерн трафика xtls-rprx-vision (не REALITY в целом)
-# избирательно блокируется DPI в некоторых регионах, хотя обычный TLS-трафик
-# проходит нормально (см. github.com/XTLS/Xray-core/issues/1615). Vision даёт
-# прирост производительности за счёт Linux splice(), но в приоритете сначала
-# факт работоспособности, а не скорость — поэтому по умолчанию выключен.
-# Включить обратно: XRAY_FLOW = "xtls-rprx-vision".
-XRAY_FLOW: str = ""
+# Официальный проверенный режим VLESS+REALITY — с xtls-rprx-vision.
+# Ранее Vision временно отключали «на всякий случай» (подозрение на DPI), но
+# это ломало уже работающую схему: клиентские ссылки и server config.json
+# расходились с тем, что реально крутится в контейнере после git pull
+# (панель писала новый config без flow, а контейнер продолжал жить со старым).
+# Пустая строка = "no flow" (plain REALITY) — оставляем как опцию на случай
+# реальной блокировки Vision в конкретной сети.
+XRAY_FLOW: str = "xtls-rprx-vision"
 DOCKER_XRAY_START_TIMEOUT_SECONDS: float = 20.0
 XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
+
+# Ротация docker-логов контейнеров панели: один файл до 10 МБ, без архивов.
+# Без этого `docker logs` (и веб-просмотрщик /logs) копится бесконечно.
+DOCKER_LOG_CONFIG: dict = {
+    "type": "json-file",
+    "config": {
+        "max-size": "10m",
+        "max-file": "1",
+    },
+}
 
 XRAY_SERVER_CONFIG_TABLE_NAME: str = "xray_server_config"
 EXPECTED_XRAY_SERVER_CONFIG_COLUMNS: dict[str, str] = {

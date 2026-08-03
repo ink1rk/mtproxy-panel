@@ -273,6 +273,14 @@ class XrayRepository:
             connection.execute(f"DELETE FROM {config.VLESS_CLIENTS_TABLE_NAME} WHERE id = ?", (client_id,))
         return client
 
+    def update_client_link(self, client_id: int, *, vless_link: str) -> None:
+        """Обновляет сохранённую vless:// ссылку (например, после смены XRAY_FLOW)."""
+        with get_connection() as connection:
+            connection.execute(
+                f"UPDATE {config.VLESS_CLIENTS_TABLE_NAME} SET vless_link = ? WHERE id = ?",
+                (vless_link, client_id),
+            )
+
     def delete_all_clients(self) -> None:
         with get_connection() as connection:
             connection.execute(f"DELETE FROM {config.VLESS_CLIENTS_TABLE_NAME}")

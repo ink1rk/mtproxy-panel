@@ -19,6 +19,7 @@ import time
 import docker
 from docker.errors import APIError, NotFound
 from docker.models.containers import Container
+from docker.types import LogConfig
 
 import config
 
@@ -27,6 +28,13 @@ logger = logging.getLogger(__name__)
 
 class XrayDockerError(RuntimeError):
     """Ошибка при работе с Docker-контейнером Xray-сервера."""
+
+
+def _docker_log_config() -> LogConfig:
+    return LogConfig(
+        type=LogConfig.types.JSON,
+        config=config.DOCKER_LOG_CONFIG["config"],
+    )
 
 
 class XrayManager:
@@ -98,6 +106,7 @@ class XrayManager:
                         "bind": "/etc/xray/config.json", "mode": "ro",
                     }
                 },
+                log_config=_docker_log_config(),
             )
         except APIError as exc:
             raise XrayDockerError(f"Не удалось создать контейнер Xray: {exc}") from exc

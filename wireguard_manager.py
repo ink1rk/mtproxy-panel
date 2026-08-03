@@ -22,6 +22,7 @@ import time
 import docker
 from docker.errors import APIError, NotFound
 from docker.models.containers import Container
+from docker.types import LogConfig
 
 import config
 
@@ -30,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 class WireGuardDockerError(RuntimeError):
     """Ошибка при работе с Docker-контейнером WireGuard-сервера."""
+
+
+def _docker_log_config() -> LogConfig:
+    return LogConfig(
+        type=LogConfig.types.JSON,
+        config=config.DOCKER_LOG_CONFIG["config"],
+    )
 
 
 class WireGuardManager:
@@ -110,6 +118,7 @@ class WireGuardManager:
                 # PEERS вообще и просто положить готовый конфиг в wg_confs/*.conf.
                 environment={"PUID": "0", "PGID": "0"},
                 volumes={str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"}},
+                log_config=_docker_log_config(),
             )
         except APIError as exc:
             raise WireGuardDockerError(f"Не удалось создать контейнер WireGuard: {exc}") from exc
@@ -181,6 +190,58 @@ class WireGuardManager:
             except ValueError:
                 continue
         return result
+
+    def get_peer_transfer_stats(self) -> dict[str, tuple[int, int]]:
+        """
+        Возвращает {public_key: (rx_bytes, tx_bytes)} по выводу
+        `wg show <iface> transfer`. Это единственный встроенный счётчик
+        трафика WireGuard — в веб-логах UDP-туннеля отдельных сессий нет.
+        """
+        container = self._get_container()
+        if container is None:
+            return {}
+        try:
+            exit_code, output = container.exec_run(
+                ["wg", "show", config.WG_INTERFACE_NAME, "transfer"]
+            )
+        except APIError:
+            return {}
+        if exit_code != 0:
+            return {}
+
+        result: dict[str, tuple[int, int]] = {}
+        for line in output.decode("utf-8", "replace").splitlines():
+            parts = line.split()
+            if len(parts) != 3:
+                continue
+            public_key, rx_raw, tx_raw = parts
+            try:
+                result[public_key] = (int(rx_raw), int(tx_raw))
+            except ValueError:
+                continue
+        return result
+
+    def wait_until_interface_ready(self, timeout: float = 15.0) -> None:
+        """
+        Ждёт, пока внутри контейнера поднимется интерфейс wg0.
+        Нужен после первого старта: linuxserver-entrypoint поднимает
+        wg-quick асинхронно, и слишком ранний `wg syncconf` падает.
+        """
+        container = self._get_container()
+        if container is None:
+            raise WireGuardDockerError("Контейнер WireGuard не найден — сервер ещё не настроен")
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            exit_code, _output = container.exec_run(
+                ["wg", "show", config.WG_INTERFACE_NAME]
+            )
+            if exit_code == 0:
+                return
+            time.sleep(0.5)
+        raise WireGuardDockerError(
+            f"Интерфейс {config.WG_INTERFACE_NAME} не поднялся внутри контейнера за {timeout:.0f}с"
+        )
 
     def restart_server(self) -> None:
         """Перезапускает контейнер WireGuard-сервера, не трогая конфигурацию/peer-ов."""

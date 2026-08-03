@@ -3,8 +3,8 @@
 ссылок для клиентов. Чистые функции без побочных эффектов.
 
 Формат config.json подтверждён по официальным примерам XTLS/Xray-examples
-(VLESS-TCP-XTLS-Vision-REALITY) — используется ТОЛЬКО этот проверенный
-набор полей, без экспериментальных/недокументированных опций.
+(VLESS-TCP-XTLS-Vision-REALITY). Поле flow опционально: если XRAY_FLOW
+пустой — в config/ссылку оно не попадает (plain REALITY).
 """
 from __future__ import annotations
 from urllib.parse import quote

@@ -10,6 +10,7 @@ import time
 import docker
 from docker.errors import APIError, NotFound
 from docker.models.containers import Container
+from docker.types import LogConfig
 
 import config
 
@@ -26,6 +27,14 @@ class ContainerStartError(RuntimeError):
 
 class ContainerRemovalTimeoutError(RuntimeError):
     """Контейнер не был удалён за отведённый таймаут."""
+
+
+def _docker_log_config() -> LogConfig:
+    """json-file с обрезкой на 10 МБ (один файл, без архивов)."""
+    return LogConfig(
+        type=LogConfig.types.JSON,
+        config=config.DOCKER_LOG_CONFIG["config"],
+    )
 
 
 class DockerManager:
@@ -87,6 +96,7 @@ class DockerManager:
             restart_policy={"Name": "unless-stopped"},
             ports={f"{config.CONTAINER_INTERNAL_PORT}/tcp": host_port},
             environment={"SECRET": secret},
+            log_config=_docker_log_config(),
         )
         return container
 
