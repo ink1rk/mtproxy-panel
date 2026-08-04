@@ -10,8 +10,10 @@ import time
 import docker
 from docker.errors import APIError, NotFound
 from docker.models.containers import Container
+from docker.types import LogConfig
 
 import config
+from docker_utils import ensure_image, format_docker_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,14 @@ class ContainerStartError(RuntimeError):
 
 class ContainerRemovalTimeoutError(RuntimeError):
     """Контейнер не был удалён за отведённый таймаут."""
+
+
+def _docker_log_config() -> LogConfig:
+    """json-file с обрезкой на 10 МБ (один файл, без архивов)."""
+    return LogConfig(
+        type=LogConfig.types.JSON,
+        config=config.DOCKER_LOG_CONFIG["config"],
+    )
 
 
 class DockerManager:
@@ -80,14 +90,24 @@ class DockerManager:
         secret: str,
     ) -> Container:
         """Создаёт и запускает контейнер telegrammessenger/proxy."""
-        container = self._client.containers.run(
-            config.MTPROXY_DOCKER_IMAGE,
-            name=container_name,
-            detach=True,
-            restart_policy={"Name": "unless-stopped"},
-            ports={f"{config.CONTAINER_INTERNAL_PORT}/tcp": host_port},
-            environment={"SECRET": secret},
-        )
+        try:
+            ensure_image(self._client, config.MTPROXY_DOCKER_IMAGE)
+            container = self._client.containers.run(
+                config.MTPROXY_DOCKER_IMAGE,
+                name=container_name,
+                detach=True,
+                restart_policy={"Name": "unless-stopped"},
+                ports={f"{config.CONTAINER_INTERNAL_PORT}/tcp": host_port},
+                environment={"SECRET": secret},
+                log_config=_docker_log_config(),
+            )
+        except RuntimeError:
+            raise
+        except APIError as exc:
+            raise RuntimeError(
+                f"Не удалось создать контейнер MTProxy '{container_name}': "
+                f"{format_docker_api_error(exc)}"
+            ) from exc
         return container
 
     def wait_until_running(

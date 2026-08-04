@@ -90,12 +90,33 @@ WireGuard, VLESS — обычно доступны из интернета да�
 `install.sh` дополнительно открывает через `ufw` только порт самой панели
 (8000/tcp), если `ufw` активен.
 
+Важно для облачных VPS (Hetzner / AWS / GCP / Timeweb / Selectel и т.п.):
+кроме `ufw` на самой машине нужно открыть порты ещё и в **Security Group /
+Firewall панели провайдера**. Типичный симптом: VLESS (TCP) работает,
+а WireGuard (UDP 51820) — нет, потому что облачный firewall режет UDP.
+Откройте `51820/udp` и `8443/tcp` (или ваши порты) во внешней панели
+провайдера, иначе пакеты клиента до NIC сервера просто не дойдут.
+
 ## Установка на Ubuntu Server
 
 ```bash
-git clone <URL_ТВОЕГО_РЕПОЗИТОРИЯ>.git
+git clone https://github.com/ink1rk/mtproxy-panel.git
 cd mtproxy-panel
 bash install.sh
+```
+
+Поддерживается Python **3.10–3.14**. На Ubuntu 26.04 (resolute) в apt есть только
+`python3` (=3.14), пакетов `python3.12` там нет — `install.sh` это учитывает и
+ставит зависимости из готовых wheels. Если старый venv сломан — скрипт пересоздаст его.
+
+`install.sh` также заранее скачивает Docker-образы (`telegrammessenger/proxy`,
+`teddysun/xray`, `lscr.io/linuxserver/wireguard`). Если `docker pull` падает —
+это проблема доступа к registry (сеть/DNS/rate limit), а не панели. Проверка:
+
+```bash
+docker pull telegrammessenger/proxy:latest
+docker pull teddysun/xray:latest
+docker pull lscr.io/linuxserver/wireguard:latest
 ```
 
 Скрипт автоматически:

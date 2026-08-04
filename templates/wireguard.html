@@ -20,7 +20,7 @@
                         ключи сервера будут сгенерированы автоматически.
                     </p>
                 </div>
-                <form method="post" action="/wireguard/setup">
+                <form method="post" action="/wireguard/setup" id="wgSetupForm">
                     <label class="form-label small text-secondary">UDP-порт сервера</label>
                     <input type="number" name="listen_port" class="form-control mb-3"
                            value="{{ default_port }}" min="1" max="65535" required>
@@ -31,10 +31,26 @@
                     <label class="form-label small text-secondary">DNS для клиентов</label>
                     <input type="text" name="dns" class="form-control mb-4" value="{{ default_dns }}" required>
 
-                    <button type="submit" class="btn brand-gradient-btn text-white w-100 py-2">
+                    <p class="form-text mb-3">
+                        Первый запуск может занять до 1–2 минут (скачивание Docker-образа).
+                        Не закрывайте и не обновляйте страницу, пока не появится список устройств.
+                    </p>
+
+                    <button type="submit" class="btn brand-gradient-btn text-white w-100 py-2" id="wgSetupBtn">
                         Настроить и запустить сервер
                     </button>
                 </form>
+                <script>
+                (function () {
+                    var form = document.getElementById('wgSetupForm');
+                    var btn = document.getElementById('wgSetupBtn');
+                    if (!form || !btn) return;
+                    form.addEventListener('submit', function () {
+                        btn.disabled = true;
+                        btn.textContent = 'Запускаю сервер… подождите';
+                    });
+                })();
+                </script>
             </div>
         </div>
     </div>
@@ -96,6 +112,7 @@
                         <th>VPN-адрес</th>
                         <th>Public Key</th>
                         <th>Последнее подключение</th>
+                        <th>Трафик</th>
                         <th>Создан</th>
                         <th>QR</th>
                         <th></th>
@@ -113,6 +130,7 @@
                             </div>
                         </td>
                         <td class="text-secondary small">{{ connection_labels.get(peer.id, "нет подключений") }}</td>
+                        <td class="text-secondary small mono">{{ traffic_labels.get(peer.id, "↓ 0 B / ↑ 0 B") }}</td>
                         <td class="text-secondary small">{{ peer.created_at[:19].replace("T", " ") }}</td>
                         <td><img src="{{ peer.qr_url }}" alt="QR" width="64" height="64" class="qr-thumb"></td>
                         <td>

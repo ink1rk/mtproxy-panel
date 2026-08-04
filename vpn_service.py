@@ -42,6 +42,18 @@ def _format_relative_time(epoch_seconds: int) -> str:
     return f"{days} дн. назад"
 
 
+def _format_bytes(num_bytes: int) -> str:
+    """Компактный размер для UI: 12 B / 1.5 KB / 3.2 MB / 1.1 GB."""
+    value = float(max(0, num_bytes))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024.0 or unit == "TB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{num_bytes} B"
+
+
 # ---------------------------------------------------------------------------
 # WireGuard
 # ---------------------------------------------------------------------------
@@ -77,6 +89,15 @@ class WireGuardService:
             for peer in self._repository.get_all_peers()
         }
 
+    def get_peer_traffic_labels(self) -> dict[int, str]:
+        """{peer.id: '↓ 1.2 MB / ↑ 340 KB'} по счётчикам WireGuard transfer."""
+        transfer_by_pubkey = self._manager.get_peer_transfer_stats()
+        labels: dict[int, str] = {}
+        for peer in self._repository.get_all_peers():
+            rx_bytes, tx_bytes = transfer_by_pubkey.get(peer.public_key, (0, 0))
+            labels[peer.id] = f"↓ {_format_bytes(rx_bytes)} / ↑ {_format_bytes(tx_bytes)}"
+        return labels
+
     def setup_server(self, *, listen_port: int, subnet: str, dns: str) -> WireGuardServerConfig:
         """
         Первоначальная настройка WireGuard-сервера: генерирует ключи,
@@ -104,8 +125,16 @@ class WireGuardService:
 
         try:
             self._manager.ensure_server_running(listen_port)
+            self._manager.wait_until_interface_ready()
+            self._manager.ensure_nat_rules(subnet)
         except WireGuardDockerError as exc:
-            raise VpnServiceError(str(exc)) from exc
+            # Сохраняем текст ошибки (с логами) ДО отката контейнера.
+            message = str(exc)
+            try:
+                self._manager.remove_server()
+            except WireGuardDockerError:
+                logger.warning("Не удалось откатить контейнер WireGuard после ошибки setup")
+            raise VpnServiceError(message) from exc
 
         return self._repository.save_server_config(
             server_private_key=server_private_key,
@@ -117,16 +146,63 @@ class WireGuardService:
         )
 
     def ensure_running_if_configured(self) -> None:
-        """Вызывается при старте приложения: если сервер уже был настроен ранее — поднимает контейнер."""
+        """
+        При старте панели: если WireGuard уже настроен — синхронизирует
+        wg0.conf из БД на диск и поднимает контейнер. Раньше файл на диске
+        мог остаться от старого/битого запуска (PEERS=0 и т.п.), а контейнер
+        просто стартовал поверх него — клиенты получали ключи из БД, а
+        интерфейс жил со старым конфигом.
+        """
         server_config = self._repository.get_server_config()
         if server_config is None:
             return
         try:
+            conf_path = config.WG_CONFIG_DIR / "wg_confs" / f"{config.WG_INTERFACE_NAME}.conf"
+            old_conf = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+            was_running = self._manager.is_running()
+            self._write_server_conf(server_config)
+            new_conf = conf_path.read_text(encoding="utf-8")
+            self._refresh_peer_client_configs(server_config)
             self._manager.ensure_server_running(server_config.listen_port)
+            self._manager.wait_until_interface_ready()
+            # syncconf НЕ выполняет PostUp. При смене NAT — полный рестарт.
+            needs_full_restart = was_running and (
+                old_conf != new_conf
+                or "-o eth0 -j MASQUERADE" in old_conf
+            )
+            if needs_full_restart:
+                logger.info("Конфиг WireGuard изменился — полный рестарт контейнера для применения NAT")
+                self._manager.restart_server()
+                self._manager.wait_until_interface_ready()
+            elif was_running:
+                self._manager.reload_config()
+            # Всегда дожимаем NAT/forwarding (idempotent) — чинит «handshake есть, интернета нет».
+            self._manager.ensure_nat_rules(server_config.subnet)
         except WireGuardDockerError as exc:
             logger.error("Не удалось поднять WireGuard-сервер при старте: %s", exc)
 
-    def _rewrite_and_reload(self, server_config: WireGuardServerConfig) -> None:
+    def _refresh_peer_client_configs(self, server_config: WireGuardServerConfig) -> None:
+        """Пересобирает .conf/QR пиров (MTU/endpoint), чтобы телефон получил актуальный профиль."""
+        for peer in self._repository.get_all_peers():
+            new_conf = wireguard_config.render_client_config(
+                client_private_key=peer.private_key,
+                client_allocated_ip=peer.allocated_ip,
+                server_public_key=server_config.server_public_key,
+                server_endpoint_ip=server_config.endpoint_ip,
+                server_listen_port=server_config.listen_port,
+                dns=server_config.dns,
+            )
+            if new_conf == peer.config_text:
+                continue
+            self._repository.update_peer_config(peer.id, config_text=new_conf)
+            try:
+                utils.generate_qr_code(new_conf, peer.qr_filename)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Не удалось обновить QR WireGuard peer id=%d: %s", peer.id, exc)
+            logger.info("Обновлён клиентский конфиг WireGuard peer '%s' (MTU/endpoint)", peer.name)
+
+    def _write_server_conf(self, server_config: WireGuardServerConfig) -> None:
+        self._manager.ensure_host_config_writable()
         peers = [
             wireguard_config.PeerForConfig(name=p.name, public_key=p.public_key, allocated_ip=p.allocated_ip)
             for p in self._repository.get_all_peers()
@@ -140,7 +216,13 @@ class WireGuardService:
         wg_confs_dir = config.WG_CONFIG_DIR / "wg_confs"
         wg_confs_dir.mkdir(parents=True, exist_ok=True)
         (wg_confs_dir / f"{config.WG_INTERFACE_NAME}.conf").write_text(server_conf_text, encoding="utf-8")
+        self._manager.ensure_host_config_writable()
+
+    def _rewrite_and_reload(self, server_config: WireGuardServerConfig) -> None:
+        self._write_server_conf(server_config)
+        self._manager.wait_until_interface_ready()
         self._manager.reload_config()
+        self._manager.ensure_nat_rules(server_config.subnet)
 
     def add_peer(self, name: str) -> WireGuardPeer:
         server_config = self._repository.get_server_config()
@@ -208,10 +290,16 @@ class WireGuardService:
 
     def restart_server(self) -> None:
         """Перезапускает контейнер WireGuard-сервера, не трогая настройки/peer-ов."""
-        if self._repository.get_server_config() is None:
+        server_config = self._repository.get_server_config()
+        if server_config is None:
             raise VpnServiceError("WireGuard-сервер ещё не настроен")
         try:
+            # Перед рестартом перезаписываем conf из БД — иначе контейнер
+            # снова поднимет устаревший файл с диска.
+            self._write_server_conf(server_config)
             self._manager.restart_server()
+            self._manager.wait_until_interface_ready()
+            self._manager.ensure_nat_rules(server_config.subnet)
         except WireGuardDockerError as exc:
             raise VpnServiceError(str(exc)) from exc
 
@@ -277,6 +365,10 @@ class XrayService:
         try:
             self._manager.ensure_server_running(listen_port, config_json)
         except XrayDockerError as exc:
+            try:
+                self._manager.remove_server()
+            except XrayDockerError:
+                logger.warning("Не удалось откатить контейнер Xray после ошибки setup")
             raise VpnServiceError(str(exc)) from exc
 
         return self._repository.save_server_config(
@@ -285,10 +377,20 @@ class XrayService:
         )
 
     def ensure_running_if_configured(self) -> None:
-        """Вызывается при старте приложения: если сервер уже был настроен ранее — поднимает контейнер."""
+        """
+        При старте панели: поднимает Xray и ПРИМЕНЯЕТ актуальный config.json
+        (включая текущий XRAY_FLOW). Раньше ensure_server_running при уже
+        running-контейнере только перезаписывал файл на диске и выходил —
+        процесс Xray продолжал жить со старым in-memory конфигом (например,
+        без Vision / со старым dest), а новые клиентские ссылки уже строились
+        по новому config.py → клиент и сервер расходились.
+        """
         server_config = self._repository.get_server_config()
         if server_config is None:
             return
+
+        self._refresh_client_links(server_config)
+
         clients_for_config = [(c.client_uuid, c.name) for c in self._repository.get_all_clients()]
         config_json = xray_config.render_server_config(
             listen_port=server_config.listen_port, dest=server_config.dest,
@@ -296,9 +398,44 @@ class XrayService:
             short_id=server_config.short_id, clients=clients_for_config,
         )
         try:
-            self._manager.ensure_server_running(server_config.listen_port, config_json)
+            if self._manager.is_running():
+                self._manager.apply_config(config_json)
+            else:
+                self._manager.ensure_server_running(server_config.listen_port, config_json)
         except XrayDockerError as exc:
             logger.error("Не удалось поднять Xray-сервер при старте: %s", exc)
+
+    def _refresh_client_links(self, server_config: XrayServerConfig) -> None:
+        """
+        Пересобирает сохранённые vless:// ссылки и QR под текущие настройки
+        (flow/SNI/порт/pubkey). Иначе после смены XRAY_FLOW в коде старые
+        ссылки в БД оставались с другим flow, и телефон продолжал слать
+        несовместимый handshake.
+        """
+        try:
+            server_ip = utils.get_server_public_ip()
+        except utils.PublicIPLookupError as exc:
+            logger.warning("Не удалось обновить vless:// ссылки при старте (нет публичного IP): %s", exc)
+            return
+
+        for client in self._repository.get_all_clients():
+            new_link = xray_config.build_vless_link(
+                client_uuid=client.client_uuid,
+                server_ip=server_ip,
+                listen_port=server_config.listen_port,
+                public_key=server_config.public_key,
+                short_id=server_config.short_id,
+                server_name=server_config.server_names,
+                remark=client.name,
+            )
+            if new_link == client.vless_link:
+                continue
+            self._repository.update_client_link(client.id, vless_link=new_link)
+            try:
+                utils.generate_qr_code(new_link, client.qr_filename)
+            except Exception as exc:  # noqa: BLE001 — QR не должен валить автозапуск
+                logger.warning("Не удалось обновить QR для VLESS-клиента id=%d: %s", client.id, exc)
+            logger.info("Обновлена vless:// ссылка клиента '%s' под текущий XRAY_FLOW/настройки", client.name)
 
     def add_client(self, name: str) -> VlessClient:
         server_config = self._repository.get_server_config()
@@ -359,11 +496,22 @@ class XrayService:
             raise VpnServiceError(f"Клиент удалён из базы, но применить конфигурацию не удалось: {exc}") from exc
 
     def restart_server(self) -> None:
-        """Перезапускает контейнер Xray-сервера, не трогая настройки/клиентов."""
-        if self._repository.get_server_config() is None:
+        """Перезапускает контейнер Xray с актуальным config.json из БД."""
+        server_config = self._repository.get_server_config()
+        if server_config is None:
             raise VpnServiceError("Xray-сервер ещё не настроен")
+
+        clients_for_config = [(c.client_uuid, c.name) for c in self._repository.get_all_clients()]
+        config_json = xray_config.render_server_config(
+            listen_port=server_config.listen_port, dest=server_config.dest,
+            server_names=[server_config.server_names], private_key=server_config.private_key,
+            short_id=server_config.short_id, clients=clients_for_config,
+        )
         try:
-            self._manager.restart_server()
+            if self._manager.get_status() == "missing":
+                self._manager.ensure_server_running(server_config.listen_port, config_json)
+            else:
+                self._manager.apply_config(config_json)
         except XrayDockerError as exc:
             raise VpnServiceError(str(exc)) from exc
 

@@ -144,7 +144,14 @@ WG_DEFAULT_PORT: int = 51820
 WG_DEFAULT_SUBNET: str = "10.66.0.0/24"
 WG_DEFAULT_DNS: str = "1.1.1.1"
 WG_KEEPALIVE_SECONDS: int = 25
-DOCKER_WG_START_TIMEOUT_SECONDS: float = 20.0
+# 1280 — безопасный MTU для мобильных сетей/CGNAT. Дефолт WireGuard 1420
+# на части LTE/операторов даёт handshake OK, но сайты «не открываются»
+# (чёрный экран / вечная загрузка) из‑за потери больших пакетов.
+WG_CLIENT_MTU: int = 1280
+DOCKER_WG_START_TIMEOUT_SECONDS: float = 45.0
+# linuxserver entrypoint + wg-quick на холодном VPS могут поднять wg0
+# дольше 15с — короткий таймаут выглядел как «страница зависла / wg0 не поднялся».
+DOCKER_WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
 
 WG_SERVER_CONFIG_TABLE_NAME: str = "wg_server_config"
 EXPECTED_WG_SERVER_CONFIG_COLUMNS: dict[str, str] = {
@@ -192,16 +199,34 @@ XRAY_DEFAULT_PORT: int = 8443
 # (без длинных цепочек/OCSP-stapling), иначе получите ту же ошибку.
 XRAY_DEFAULT_DEST: str = "www.cloudflare.com:443"
 XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
-# Пусто = "no flow" (обычный REALITY без XTLS Vision). Есть подтверждённые
-# случаи, когда именно паттерн трафика xtls-rprx-vision (не REALITY в целом)
-# избирательно блокируется DPI в некоторых регионах, хотя обычный TLS-трафик
-# проходит нормально (см. github.com/XTLS/Xray-core/issues/1615). Vision даёт
-# прирост производительности за счёт Linux splice(), но в приоритете сначала
-# факт работоспособности, а не скорость — поэтому по умолчанию выключен.
-# Включить обратно: XRAY_FLOW = "xtls-rprx-vision".
-XRAY_FLOW: str = ""
+# Официальный проверенный режим VLESS+REALITY — с xtls-rprx-vision.
+# Ранее Vision временно отключали «на всякий случай» (подозрение на DPI), но
+# это ломало уже работающую схему: клиентские ссылки и server config.json
+# расходились с тем, что реально крутится в контейнере после git pull
+# (панель писала новый config без flow, а контейнер продолжал жить со старым).
+# Пустая строка = "no flow" (plain REALITY) — оставляем как опцию на случай
+# реальной блокировки Vision в конкретной сети.
+XRAY_FLOW: str = "xtls-rprx-vision"
+# С Xray-core >= 26.7.11 пустой minClientVer больше НЕ означает «принимать
+# любой клиент»: ядро подставляет дефолт "26.3.27" и молча отправляет более
+# старые клиенты (типичные сборки v2rayNG / NekoBox / Shadowrocket) на
+# fallback-dest — TLS handshake «успешен», а прокси-трафика 0 байт. Это как
+# раз симптом, из-за которого Vision ошибочно отключали «из-за DPI».
+# Явно ставим низкий порог, чтобы панель работала с обычными мобильными
+# клиентами без принудительного обновления ядра на телефоне.
+XRAY_MIN_CLIENT_VER: str = "1.0.0"
 DOCKER_XRAY_START_TIMEOUT_SECONDS: float = 20.0
 XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
+
+# Ротация docker-логов контейнеров панели: один файл до 10 МБ, без архивов.
+# Без этого `docker logs` (и веб-просмотрщик /logs) копится бесконечно.
+DOCKER_LOG_CONFIG: dict = {
+    "type": "json-file",
+    "config": {
+        "max-size": "10m",
+        "max-file": "1",
+    },
+}
 
 XRAY_SERVER_CONFIG_TABLE_NAME: str = "xray_server_config"
 EXPECTED_XRAY_SERVER_CONFIG_COLUMNS: dict[str, str] = {

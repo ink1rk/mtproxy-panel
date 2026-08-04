@@ -22,8 +22,15 @@ readonly HEALTHCHECK_URL="http://127.0.0.1:${APP_PORT}/"
 readonly HEALTHCHECK_TIMEOUT_SECONDS=30
 readonly PYTHON_MIN_MAJOR=3
 readonly PYTHON_MIN_MINOR=10
+# Верхняя поддерживаемая минорная версия. Ubuntu 26.04 (resolute) уже
+# поставляет python3=3.14 и НЕ имеет пакетов python3.12/3.13 — поэтому
+# 3.14 обязан быть first-class (requirements.txt содержит версии с cp314 wheels).
+readonly PYTHON_MAX_MINOR=14
 readonly SYSTEMD_SERVICE_NAME="mtproxy-panel"
 readonly SYSTEMD_UNIT_FILE="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}.service"
+
+# Выбирается в ensure_python(); дальше venv создаётся именно им.
+PYTHON_BIN="python3"
 
 log() {
     printf '[install.sh] %s\n' "$1"
@@ -124,61 +131,104 @@ ensure_repo_up_to_date() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Установка Python, если отсутствует
+# 1. Установка / выбор подходящего Python
 # ---------------------------------------------------------------------------
-ensure_python() {
-    local need_install=0
+_python_version_of() {
+    # Печатает "major.minor" для переданного интерпретатора, либо пусто.
+    local bin="$1"
+    command -v "${bin}" >/dev/null 2>&1 || return 1
+    "${bin}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null
+}
 
-    if command -v python3 >/dev/null 2>&1; then
-        local version major minor
-        version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-        major="${version%%.*}"
-        minor="${version##*.}"
-        if (( major > PYTHON_MIN_MAJOR || (major == PYTHON_MIN_MAJOR && minor >= PYTHON_MIN_MINOR) )); then
-            log "Python ${version} уже установлен."
+_python_is_usable() {
+    # Поддерживаем 3.10 … 3.14 включительно (3.14 = дефолт Ubuntu 26.04 resolute).
+    local bin="$1"
+    local version major minor
+    version="$(_python_version_of "${bin}")" || return 1
+    major="${version%%.*}"
+    minor="${version##*.}"
+    if (( major != PYTHON_MIN_MAJOR )); then
+        return 1
+    fi
+    if (( minor < PYTHON_MIN_MINOR || minor > PYTHON_MAX_MINOR )); then
+        return 1
+    fi
+    "${bin}" -m venv --help >/dev/null 2>&1 || return 1
+    return 0
+}
+
+_apt_install_optional() {
+    # Best-effort: отсутствие пакета (как python3.12 на Ubuntu resolute)
+    # НЕ должно ронять install.sh при set -e.
+    local pkg
+    for pkg in "$@"; do
+        if as_root apt-get install -y "${pkg}" >/dev/null 2>&1; then
+            log "Установлен пакет '${pkg}'."
         else
-            log "Найден Python ${version}, требуется >= ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}."
-            need_install=1
+            log "Пакет '${pkg}' недоступен в apt — пропускаю."
         fi
-    else
-        log "Python3 не найден."
-        need_install=1
-    fi
+    done
+}
 
-    # На минимальных образах Ubuntu python3 может быть предустановлен,
-    # но пакет с модулем venv (python3-venv / python3.X-venv) — нет.
-    # Поэтому проверяем venv отдельно, независимо от версии Python.
-    if ! python3 -m venv --help >/dev/null 2>&1; then
-        log "Модуль 'venv' недоступен для текущего python3."
-        need_install=1
-    fi
-
-    if ! python3 -m pip --version >/dev/null 2>&1; then
-        log "Модуль 'pip' недоступен для текущего python3."
-        need_install=1
-    fi
-
-    if (( need_install == 0 )); then
-        return
-    fi
-
-    log "Устанавливаю python3, python3-venv, python3-pip."
+_ensure_python_system_packages() {
+    log "Проверяю системные пакеты Python / venv."
     as_root apt-get update -y
 
-    local py_minor_pkg="python3.$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo '')"
+    # Обязательный минимум для текущей ОС (на resolute это python3=3.14).
+    as_root apt-get install -y python3 python3-pip python3-venv
 
-    # Ставим и универсальные, и версионные пакеты (например python3.12-venv),
-    # т.к. на разных релизах Ubuntu имя пакета для venv отличается.
-    # apt-get install игнорирует не найденные версионные имена мягко только
-    # если явно допустить ошибку -- поэтому пробуем по отдельности.
-    as_root apt-get install -y python3 python3-venv python3-pip
-    if [[ -n "${py_minor_pkg}" && "${py_minor_pkg}" != "python3." ]]; then
-        as_root apt-get install -y "${py_minor_pkg}-venv" 2>/dev/null || true
-    fi
+    # Опционально: версионные интерпретаторы (есть на 22.04/24.04, нет на 26.04)
+    # и libs на случай, если pip всё же решит собрать что-то из исходников.
+    _apt_install_optional \
+        python3.14-venv \
+        python3.13 \
+        python3.13-venv \
+        python3.12 \
+        python3.12-venv \
+        python3.11 \
+        python3.11-venv \
+        libjpeg-dev \
+        zlib1g-dev
 
-    if ! python3 -m venv --help >/dev/null 2>&1; then
-        fail "Не удалось установить рабочий модуль venv для python3. Установите вручную: apt install python3-venv (или python3.X-venv) и запустите install.sh снова."
+    # Если python3 есть, но без venv — дотягиваем версионный пакет под его minor.
+    if command -v python3 >/dev/null 2>&1 && ! python3 -m venv --help >/dev/null 2>&1; then
+        local minor
+        minor="$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
+        if [[ -n "${minor}" ]]; then
+            _apt_install_optional "python3.${minor}-venv"
+        fi
+        as_root apt-get install -y python3-venv || true
     fi
+}
+
+ensure_python() {
+    local candidate
+
+    # 1) Уже есть пригодный интерпретатор — берём лучший доступный.
+    for candidate in python3.12 python3.13 python3.14 python3.11 python3; do
+        if _python_is_usable "${candidate}"; then
+            PYTHON_BIN="$(command -v "${candidate}")"
+            log "Использую ${PYTHON_BIN} ($(_python_version_of "${PYTHON_BIN}")) для venv."
+            return
+        fi
+    done
+
+    # 2) Доустанавливаем системные пакеты (без падения на отсутствующих 3.12).
+    _ensure_python_system_packages
+
+    for candidate in python3.12 python3.13 python3.14 python3.11 python3; do
+        if _python_is_usable "${candidate}"; then
+            PYTHON_BIN="$(command -v "${candidate}")"
+            log "Использую ${PYTHON_BIN} ($(_python_version_of "${PYTHON_BIN}")) для venv."
+            return
+        fi
+    done
+
+    local have_ver=""
+    if command -v python3 >/dev/null 2>&1; then
+        have_ver="$(_python_version_of python3 || echo '?')"
+    fi
+    fail "Не удалось найти пригодный Python ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}–${PYTHON_MIN_MAJOR}.${PYTHON_MAX_MINOR} с модулем venv (сейчас python3=${have_ver:-нет}). Установите: apt install -y python3 python3-venv && bash install.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -224,6 +274,33 @@ ensure_docker() {
 }
 
 # ---------------------------------------------------------------------------
+# 2b. Предзагрузка Docker-образов панели
+# ---------------------------------------------------------------------------
+ensure_docker_images() {
+    # Без локальных образов создание MTProxy/WG/Xray падает с непрозрачным
+    # "500 Server Error .../images/create". Тянем их на этапе установки —
+    # если registry недоступен, пользователь узнает сразу, а не из UI.
+    local -a images=(
+        "telegrammessenger/proxy:latest"
+        "teddysun/xray:latest"
+        "lscr.io/linuxserver/wireguard:latest"
+    )
+    local image
+    for image in "${images[@]}"; do
+        log "Проверяю Docker-образ '${image}'…"
+        if as_root docker image inspect "${image}" >/dev/null 2>&1; then
+            log "Образ '${image}' уже есть локально."
+            continue
+        fi
+        log "Скачиваю '${image}' (это может занять несколько минут)…"
+        if ! as_root docker pull "${image}"; then
+            fail "Не удалось скачать образ '${image}'. Обычно это сеть/DNS/Docker Hub rate limit. Проверьте: docker pull ${image}. При блокировке Hub настройте registry-mirror в /etc/docker/daemon.json и перезапустите docker."
+        fi
+    done
+    log "Все необходимые Docker-образы доступны локально."
+}
+
+# ---------------------------------------------------------------------------
 # 3. Создание структуры проекта (директории создаются и в config.py,
 #    но гарантируем их наличие до старта, чтобы установка была явной)
 # ---------------------------------------------------------------------------
@@ -241,16 +318,47 @@ ensure_project_structure() {
 # 4. Виртуальное окружение и зависимости
 # ---------------------------------------------------------------------------
 ensure_venv() {
-    if [[ ! -d "${VENV_DIR}" ]]; then
-        log "Создаю виртуальное окружение."
-        python3 -m venv "${VENV_DIR}"
+    local recreate=0
+    local venv_version=""
+    local wanted_version
+
+    wanted_version="$(_python_version_of "${PYTHON_BIN}")"
+
+    if [[ -d "${VENV_DIR}" && -x "${VENV_DIR}/bin/python" ]]; then
+        venv_version="$(_python_version_of "${VENV_DIR}/bin/python" || echo "")"
+        if [[ -z "${venv_version}" || "${venv_version}" != "${wanted_version}" ]]; then
+            log "Существующий venv на Python ${venv_version:-?} не совпадает с ${PYTHON_BIN} (${wanted_version}) — пересоздаю."
+            recreate=1
+        elif ! "${VENV_DIR}/bin/python" -c "import fastapi, pydantic, PIL, docker" >/dev/null 2>&1; then
+            log "Venv на Python ${venv_version} без рабочих зависимостей — пересоздаю."
+            recreate=1
+        fi
     else
-        log "Виртуальное окружение уже существует."
+        recreate=1
     fi
 
-    log "Устанавливаю зависимости из requirements.txt."
+    if (( recreate == 1 )); then
+        if [[ -d "${VENV_DIR}" ]]; then
+            log "Удаляю старое виртуальное окружение."
+            rm -rf "${VENV_DIR}"
+        fi
+        log "Создаю виртуальное окружение через ${PYTHON_BIN} (${wanted_version})."
+        "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+    else
+        log "Виртуальное окружение уже существует (Python ${venv_version})."
+    fi
+
+    log "Устанавливаю зависимости из requirements.txt (готовые wheels для native-пакетов)."
     "${VENV_DIR}/bin/pip" install --upgrade pip --quiet
-    "${VENV_DIR}/bin/pip" install -r "${SCRIPT_DIR}/requirements.txt" --quiet
+    # Для native-пакетов запрещаем сборку из исходников: на 3.14 отсутствие
+    # wheel раньше превращалось в 200 строк ошибок компиляции jpeg/rust.
+    if ! "${VENV_DIR}/bin/pip" install \
+            --only-binary=pillow,pydantic-core,cryptography \
+            -r "${SCRIPT_DIR}/requirements.txt"; then
+        fail "Не удалось установить Python-зависимости для Python ${wanted_version}. Обновите ветку/requirements.txt, затем: rm -rf venv && bash install.sh"
+    fi
+
+    "${VENV_DIR}/bin/python" -c "import fastapi, pydantic, PIL, docker, qrcode, cryptography; print('deps OK')"
 }
 
 # ---------------------------------------------------------------------------
@@ -494,13 +602,20 @@ ensure_wireguard_kernel_support() {
             "изначально) — контейнер WireGuard-сервера попробует загрузить модуль сам " \
             "при первом запуске из панели."
     fi
+    # Без ip_forward на ХОСТЕ Docker иногда не пропускает форвард из контейнера WG.
+    if as_root sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; then
+        log "Включён net.ipv4.ip_forward=1 на хосте."
+    fi
+    if [[ -d /etc/sysctl.d ]]; then
+        printf 'net.ipv4.ip_forward=1\n' | as_root tee /etc/sysctl.d/99-mtproxy-panel-forward.conf >/dev/null || true
+    fi
 }
 
 # ---------------------------------------------------------------------------
-# 8. Firewall: открываем порт самой панели, если активен ufw. Порты,
-#    публикуемые Docker'ом (-p) для MTProxy/WireGuard/Xray контейнеров,
-#    ufw обычно не блокирует — Docker управляет своими iptables-правилами
-#    независимо от ufw, поэтому их отдельно открывать не требуется.
+# 8. Firewall: при активном ufw открываем порты панели и VPN по умолчанию.
+#    Docker обычно пробивает свои -p через iptables сам, но на части Ubuntu
+#    (и при ufw-docker конфликтах) без явного allow клиенты с телефона
+#    просто не достучатся — снаружи «ничего не открывается».
 # ---------------------------------------------------------------------------
 ensure_firewall_allows_panel() {
     if ! command -v ufw >/dev/null 2>&1; then
@@ -509,8 +624,10 @@ ensure_firewall_allows_panel() {
     if ! as_root ufw status 2>/dev/null | grep -qi "Status: active"; then
         return
     fi
-    log "Обнаружен активный ufw — открываю порт панели ${APP_PORT}/tcp."
+    log "Обнаружен активный ufw — открываю порты панели и VPN по умолчанию."
     as_root ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+    as_root ufw allow 51820/udp >/dev/null 2>&1 || true   # WireGuard
+    as_root ufw allow 8443/tcp >/dev/null 2>&1 || true    # VLESS+REALITY
 }
 
 # ---------------------------------------------------------------------------
@@ -521,6 +638,7 @@ main() {
     ensure_repo_up_to_date
     ensure_python
     ensure_docker
+    ensure_docker_images
     ensure_wireguard_kernel_support
     ensure_firewall_allows_panel
     ensure_project_structure

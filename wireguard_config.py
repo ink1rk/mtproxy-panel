@@ -58,23 +58,24 @@ def render_server_config(
     Строит содержимое server-side wg0.conf: один [Interface] и по одному
     [Peer] блоку на каждого зарегистрированного клиента.
 
-    PostUp/PostDown добавляют NAT (MASQUERADE) для трафика из туннеля наружу
-    через eth0 — единственный сетевой интерфейс контейнера в стандартной
-    bridge-сети Docker. Без этого клиенты подключились бы к VPN, но не
-    получили бы доступ в интернет через туннель (стандартный паттерн для
-    WireGuard-сервера в Docker, подтверждённый несколькими независимыми
-    источниками, включая официальный блог LinuxServer.io).
+    PostUp/PostDown — только простые iptables-команды.
+    Сложный PostUp (sysctl / `iptables -C || -A`) на части образов linuxserver
+    зависал внутри wg-quick → интерфейс не поднимался → страница setup в
+    панели «висела». Надёжный NAT дожимает ensure_nat_rules() после старта.
     """
     _, prefix = _subnet_base_and_prefix(subnet)
+    network_cidr = subnet if "/" in subnet else f"{subnet}/{prefix}"
     lines = [
         "[Interface]",
         f"PrivateKey = {server_private_key}",
         f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
-        "PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; "
-        "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE",
-        "PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; "
-        "iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE",
+        "PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; "
+        "iptables -A FORWARD -o wg0 -j ACCEPT; "
+        f"iptables -t nat -A POSTROUTING -s {network_cidr} -j MASQUERADE",
+        "PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; "
+        "iptables -D FORWARD -o wg0 -j ACCEPT; "
+        f"iptables -t nat -D POSTROUTING -s {network_cidr} -j MASQUERADE",
         "",
     ]
     for peer in peers:
@@ -106,6 +107,7 @@ def render_client_config(
             f"PrivateKey = {client_private_key}",
             f"Address = {client_allocated_ip}/32",
             f"DNS = {dns}",
+            f"MTU = {config.WG_CLIENT_MTU}",
             "",
             "[Peer]",
             f"PublicKey = {server_public_key}",

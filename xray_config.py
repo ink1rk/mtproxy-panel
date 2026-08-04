@@ -3,8 +3,8 @@
 ссылок для клиентов. Чистые функции без побочных эффектов.
 
 Формат config.json подтверждён по официальным примерам XTLS/Xray-examples
-(VLESS-TCP-XTLS-Vision-REALITY) — используется ТОЛЬКО этот проверенный
-набор полей, без экспериментальных/недокументированных опций.
+(VLESS-TCP-XTLS-Vision-REALITY). Поле flow опционально: если XRAY_FLOW
+пустой — в config/ссылку оно не попадает (plain REALITY).
 """
 from __future__ import annotations
 from urllib.parse import quote
@@ -56,6 +56,9 @@ def render_server_config(
                         "serverNames": server_names,
                         "privateKey": private_key,
                         "shortIds": [short_id],
+                        # См. config.XRAY_MIN_CLIENT_VER — без явного значения
+                        # свежий Xray-core режет обычные мобильные клиенты.
+                        "minClientVer": config.XRAY_MIN_CLIENT_VER,
                     },
                 },
                 "sniffing": {
