@@ -157,36 +157,29 @@ _python_is_usable() {
     return 0
 }
 
-_apt_install_available() {
-    # Ставит только те пакеты из списка, которые реально есть в apt.
-    # На Ubuntu resolute нет python3.12 — жёсткий apt-get install python3.12
-    # ронял весь install.sh из-за set -e. Здесь отсутствие пакета = skip.
+_apt_install_optional() {
+    # Best-effort: отсутствие пакета (как python3.12 на Ubuntu resolute)
+    # НЕ должно ронять install.sh при set -e.
     local pkg
-    local -a available=()
     for pkg in "$@"; do
-        if apt-cache show "${pkg}" >/dev/null 2>&1; then
-            available+=("${pkg}")
+        if as_root apt-get install -y "${pkg}" >/dev/null 2>&1; then
+            log "Установлен пакет '${pkg}'."
         else
             log "Пакет '${pkg}' недоступен в apt — пропускаю."
         fi
     done
-    if (( ${#available[@]} == 0 )); then
-        return 0
-    fi
-    as_root apt-get install -y "${available[@]}"
 }
 
 _ensure_python_system_packages() {
     log "Проверяю системные пакеты Python / venv."
     as_root apt-get update -y
 
-    # Базовое — всегда пробуем. Версионные python3.X — только если есть в apt
-    # (на 22.04/24.04 есть 3.12; на 26.04 resolute — только 3.14 как python3).
-    _apt_install_available \
-        python3 \
-        python3-pip \
-        python3-venv \
-        python3.14 \
+    # Обязательный минимум для текущей ОС (на resolute это python3=3.14).
+    as_root apt-get install -y python3 python3-pip python3-venv
+
+    # Опционально: версионные интерпретаторы (есть на 22.04/24.04, нет на 26.04)
+    # и libs на случай, если pip всё же решит собрать что-то из исходников.
+    _apt_install_optional \
         python3.14-venv \
         python3.13 \
         python3.13-venv \
@@ -197,13 +190,14 @@ _ensure_python_system_packages() {
         libjpeg-dev \
         zlib1g-dev
 
-    # Если python3 есть, но без venv — пробуем версионный пакет под его minor.
-    if command -v python3 >/dev/null 2>&1; then
+    # Если python3 есть, но без venv — дотягиваем версионный пакет под его minor.
+    if command -v python3 >/dev/null 2>&1 && ! python3 -m venv --help >/dev/null 2>&1; then
         local minor
         minor="$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
-        if [[ -n "${minor}" ]] && ! python3 -m venv --help >/dev/null 2>&1; then
-            _apt_install_available "python3.${minor}-venv" python3-venv
+        if [[ -n "${minor}" ]]; then
+            _apt_install_optional "python3.${minor}-venv"
         fi
+        as_root apt-get install -y python3-venv || true
     fi
 }
 
@@ -277,6 +271,33 @@ ensure_docker() {
     if ! as_root docker info >/dev/null 2>&1; then
         fail "Docker daemon не отвечает после установки/запуска."
     fi
+}
+
+# ---------------------------------------------------------------------------
+# 2b. Предзагрузка Docker-образов панели
+# ---------------------------------------------------------------------------
+ensure_docker_images() {
+    # Без локальных образов создание MTProxy/WG/Xray падает с непрозрачным
+    # "500 Server Error .../images/create". Тянем их на этапе установки —
+    # если registry недоступен, пользователь узнает сразу, а не из UI.
+    local -a images=(
+        "telegrammessenger/proxy:latest"
+        "teddysun/xray:latest"
+        "lscr.io/linuxserver/wireguard:latest"
+    )
+    local image
+    for image in "${images[@]}"; do
+        log "Проверяю Docker-образ '${image}'…"
+        if as_root docker image inspect "${image}" >/dev/null 2>&1; then
+            log "Образ '${image}' уже есть локально."
+            continue
+        fi
+        log "Скачиваю '${image}' (это может занять несколько минут)…"
+        if ! as_root docker pull "${image}"; then
+            fail "Не удалось скачать образ '${image}'. Обычно это сеть/DNS/Docker Hub rate limit. Проверьте: docker pull ${image}. При блокировке Hub настройте registry-mirror в /etc/docker/daemon.json и перезапустите docker."
+        fi
+    done
+    log "Все необходимые Docker-образы доступны локально."
 }
 
 # ---------------------------------------------------------------------------

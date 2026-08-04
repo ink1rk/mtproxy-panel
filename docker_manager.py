@@ -13,6 +13,7 @@ from docker.models.containers import Container
 from docker.types import LogConfig
 
 import config
+from docker_utils import ensure_image, format_docker_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +90,24 @@ class DockerManager:
         secret: str,
     ) -> Container:
         """Создаёт и запускает контейнер telegrammessenger/proxy."""
-        container = self._client.containers.run(
-            config.MTPROXY_DOCKER_IMAGE,
-            name=container_name,
-            detach=True,
-            restart_policy={"Name": "unless-stopped"},
-            ports={f"{config.CONTAINER_INTERNAL_PORT}/tcp": host_port},
-            environment={"SECRET": secret},
-            log_config=_docker_log_config(),
-        )
+        try:
+            ensure_image(self._client, config.MTPROXY_DOCKER_IMAGE)
+            container = self._client.containers.run(
+                config.MTPROXY_DOCKER_IMAGE,
+                name=container_name,
+                detach=True,
+                restart_policy={"Name": "unless-stopped"},
+                ports={f"{config.CONTAINER_INTERNAL_PORT}/tcp": host_port},
+                environment={"SECRET": secret},
+                log_config=_docker_log_config(),
+            )
+        except RuntimeError:
+            raise
+        except APIError as exc:
+            raise RuntimeError(
+                f"Не удалось создать контейнер MTProxy '{container_name}': "
+                f"{format_docker_api_error(exc)}"
+            ) from exc
         return container
 
     def wait_until_running(

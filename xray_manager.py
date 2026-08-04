@@ -22,6 +22,7 @@ from docker.models.containers import Container
 from docker.types import LogConfig
 
 import config
+from docker_utils import ensure_image, format_docker_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,7 @@ class XrayManager:
 
         logger.info("Создаю контейнер Xray-сервера на порту %d/tcp", listen_port)
         try:
+            ensure_image(self._client, config.XRAY_DOCKER_IMAGE)
             container = self._client.containers.run(
                 config.XRAY_DOCKER_IMAGE,
                 name=config.XRAY_CONTAINER_NAME,
@@ -108,8 +110,12 @@ class XrayManager:
                 },
                 log_config=_docker_log_config(),
             )
+        except RuntimeError as exc:
+            raise XrayDockerError(str(exc)) from exc
         except APIError as exc:
-            raise XrayDockerError(f"Не удалось создать контейнер Xray: {exc}") from exc
+            raise XrayDockerError(
+                f"Не удалось создать контейнер Xray: {format_docker_api_error(exc)}"
+            ) from exc
 
         self._wait_running(container)
 

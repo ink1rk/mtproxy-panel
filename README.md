@@ -109,6 +109,16 @@ bash install.sh
 `python3` (=3.14), пакетов `python3.12` там нет — `install.sh` это учитывает и
 ставит зависимости из готовых wheels. Если старый venv сломан — скрипт пересоздаст его.
 
+`install.sh` также заранее скачивает Docker-образы (`telegrammessenger/proxy`,
+`teddysun/xray`, `lscr.io/linuxserver/wireguard`). Если `docker pull` падает —
+это проблема доступа к registry (сеть/DNS/rate limit), а не панели. Проверка:
+
+```bash
+docker pull telegrammessenger/proxy:latest
+docker pull teddysun/xray:latest
+docker pull lscr.io/linuxserver/wireguard:latest
+```
+
 Скрипт автоматически:
 
 1. установит Python 3 (и модуль `venv`/`pip`, даже если Python уже был) и Docker, если их нет;

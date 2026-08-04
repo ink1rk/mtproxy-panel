@@ -27,6 +27,7 @@ from docker.models.containers import Container
 from docker.types import LogConfig
 
 import config
+from docker_utils import ensure_image, format_docker_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class WireGuardManager:
 
         logger.info("Создаю контейнер WireGuard-сервера на порту %d/udp", listen_port)
         try:
+            ensure_image(self._client, config.WG_DOCKER_IMAGE)
             container = self._client.containers.run(
                 config.WG_DOCKER_IMAGE,
                 name=config.WG_CONTAINER_NAME,
@@ -124,8 +126,12 @@ class WireGuardManager:
                 volumes={str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"}},
                 log_config=_docker_log_config(),
             )
+        except RuntimeError as exc:
+            raise WireGuardDockerError(str(exc)) from exc
         except APIError as exc:
-            raise WireGuardDockerError(f"Не удалось создать контейнер WireGuard: {exc}") from exc
+            raise WireGuardDockerError(
+                f"Не удалось создать контейнер WireGuard: {format_docker_api_error(exc)}"
+            ) from exc
 
         self._wait_running(container)
         self.ensure_host_config_writable()
