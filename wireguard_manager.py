@@ -205,15 +205,21 @@ echo NAT_OK wan={wan}
                         raise WireGuardError(f"wg-quick up failed: {up.output}")
         else:
             host_exec.run(["wg-quick", "down", config.WG_INTERFACE_NAME], check=False)
+            host_exec.run(
+                ["ip", "link", "delete", "dev", config.WG_INTERFACE_NAME],
+                check=False,
+            )
+            host_exec.systemctl("reset-failed", config.WG_SYSTEMD_UNIT, check=False)
             up = host_exec.run(["wg-quick", "up", config.WG_INTERFACE_NAME], check=False)
-            if not up.ok:
-                # systemd start fallback
+            if not up.ok and "already exists" not in up.output:
                 host_exec.systemctl("start", config.WG_SYSTEMD_UNIT, check=False)
                 time.sleep(1)
             if not self.is_running():
                 raise WireGuardError(
                     "Не удалось поднять wg0. journalctl -u wg-quick@wg0"
                 )
+            # Синхронизируем systemd-статус с уже поднятым iface.
+            host_exec.systemctl("reset-failed", config.WG_SYSTEMD_UNIT, check=False)
             host_exec.systemctl("start", config.WG_SYSTEMD_UNIT, check=False)
 
         self.wait_until_interface_ready()
