@@ -128,11 +128,13 @@ class WireGuardService:
             self._manager.wait_until_interface_ready()
             self._manager.ensure_nat_rules(subnet)
         except WireGuardDockerError as exc:
+            # Сохраняем текст ошибки (с логами) ДО отката контейнера.
+            message = str(exc)
             try:
                 self._manager.remove_server()
             except WireGuardDockerError:
                 logger.warning("Не удалось откатить контейнер WireGuard после ошибки setup")
-            raise VpnServiceError(str(exc)) from exc
+            raise VpnServiceError(message) from exc
 
         return self._repository.save_server_config(
             server_private_key=server_private_key,

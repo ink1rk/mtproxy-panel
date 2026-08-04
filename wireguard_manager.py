@@ -78,9 +78,9 @@ class WireGuardManager:
     def ensure_server_running(self, listen_port: int) -> None:
         """
         Создаёт (если не существует) и запускает контейнер WireGuard-сервера.
-        Идемпотентно: если контейнер уже существует и работает — ничего не делает.
-        Конфигурация (wg0.conf) читается контейнером из смонтированной директории
-        config.WG_CONFIG_DIR/wg_confs/wg0.conf, которую формирует панель.
+        Идемпотентно: если контейнер уже running — ничего не делает.
+        Контейнеры в статусе exited/created после сорванного setup удаляются
+        и создаются заново (иначе wg0 часто так и не поднимается).
         """
         container = self._get_container()
         if container is not None:
@@ -88,14 +88,16 @@ class WireGuardManager:
             if container.status == "running":
                 self.ensure_host_config_writable()
                 return
-            logger.info("Контейнер WireGuard существует, но не запущен — запускаю")
+            logger.warning(
+                "Контейнер WireGuard в статусе '%s' — удаляю и создаю заново",
+                container.status,
+            )
             try:
-                container.start()
+                container.remove(force=True)
             except APIError as exc:
-                raise WireGuardDockerError(f"Не удалось запустить контейнер WireGuard: {exc}") from exc
-            self._wait_running(container)
-            self.ensure_host_config_writable()
-            return
+                raise WireGuardDockerError(
+                    f"Не удалось удалить старый контейнер WireGuard: {format_docker_api_error(exc)}"
+                ) from exc
 
         logger.info("Создаю контейнер WireGuard-сервера на порту %d/udp", listen_port)
         try:
@@ -105,7 +107,9 @@ class WireGuardManager:
                 name=config.WG_CONTAINER_NAME,
                 detach=True,
                 restart_policy={"Name": "unless-stopped"},
-                cap_add=["NET_ADMIN", "SYS_MODULE"],
+                # Без SYS_MODULE: на части VPS (Timeweb) он надолго подвешивает
+                # старт. Модуль WG на Ubuntu обычно уже в ядре; ip_forward — через sysctls.
+                cap_add=["NET_ADMIN"],
                 sysctls={
                     "net.ipv4.conf.all.src_valid_mark": "1",
                     "net.ipv4.ip_forward": "1",
@@ -113,15 +117,7 @@ class WireGuardManager:
                 ports={f"{listen_port}/udp": listen_port},
                 # ВАЖНО: PEERS не задаём вовсе (а не "0"!). У linuxserver/wireguard
                 # ЛЮБОЕ непустое значение PEERS (включая "0") включает "серверный"
-                # режим — образ САМ генерирует новый wg0.conf (со своим случайным
-                # приватным ключом и служебной подсетью 10.13.13.0/24!), полностью
-                # затирая наш файл ДО первого 'wg-quick up'. Из-за этого реальный
-                # запущенный интерфейс не совпадал ни по ключу, ни по подсети с тем,
-                # что панель хранит в БД и отдаёт клиентам — туннель не мог поднять
-                # соединение и/или не мог маршрутизировать трафик пиров (не было
-                # маршрута до подсети пиров в таблице маршрутизации контейнера).
-                # Официально документированный "bare/client mode" — не задавать
-                # PEERS вообще и просто положить готовый конфиг в wg_confs/*.conf.
+                # режим — образ САМ генерирует новый wg0.conf.
                 environment={"PUID": "0", "PGID": "0"},
                 volumes={str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"}},
                 log_config=_docker_log_config(),
@@ -261,26 +257,55 @@ class WireGuardManager:
                 continue
         return result
 
-    def wait_until_interface_ready(self, timeout: float = 15.0) -> None:
+    def _container_diagnostics(self) -> str:
+        """Короткий дамп логов/статуса для текста ошибки в UI."""
+        container = self._get_container()
+        if container is None:
+            return "контейнер отсутствует"
+        try:
+            container.reload()
+            status = container.status
+            logs = container.logs(tail=40).decode("utf-8", "replace").strip()
+            code, conf = container.exec_run(
+                ["bash", "-c", "ls -la /config/wg_confs/ 2>&1; echo '---'; cat /config/wg_confs/wg0.conf 2>&1 | head -20"]
+            )
+            conf_text = conf.decode("utf-8", "replace").strip() if code == 0 or conf else ""
+            return f"status={status}\n--- docker logs ---\n{logs}\n--- config ---\n{conf_text}"
+        except Exception as exc:  # noqa: BLE001
+            return f"не удалось собрать диагностику: {exc}"
+
+    def wait_until_interface_ready(
+        self, timeout: float | None = None,
+    ) -> None:
         """
         Ждёт, пока внутри контейнера поднимется интерфейс wg0.
-        Нужен после первого старта: linuxserver-entrypoint поднимает
-        wg-quick асинхронно, и слишком ранний `wg syncconf` падает.
+        linuxserver-entrypoint поднимает wg-quick асинхронно после start.
         """
+        if timeout is None:
+            timeout = config.DOCKER_WG_INTERFACE_TIMEOUT_SECONDS
         container = self._get_container()
         if container is None:
             raise WireGuardDockerError("Контейнер WireGuard не найден — сервер ещё не настроен")
 
         deadline = time.monotonic() + timeout
+        last_err = ""
         while time.monotonic() < deadline:
-            exit_code, _output = container.exec_run(
+            container.reload()
+            if container.status in {"exited", "dead"}:
+                raise WireGuardDockerError(
+                    f"Контейнер WireGuard упал со статусом '{container.status}' "
+                    f"до подъёма wg0.\n{self._container_diagnostics()}"
+                )
+            exit_code, output = container.exec_run(
                 ["wg", "show", config.WG_INTERFACE_NAME]
             )
             if exit_code == 0:
                 return
-            time.sleep(0.5)
+            last_err = output.decode("utf-8", "replace").strip()
+            time.sleep(1.0)
         raise WireGuardDockerError(
-            f"Интерфейс {config.WG_INTERFACE_NAME} не поднялся внутри контейнера за {timeout:.0f}с"
+            f"Интерфейс {config.WG_INTERFACE_NAME} не поднялся за {timeout:.0f}с. "
+            f"Последний ответ wg: {last_err or '(пусто)'}\n{self._container_diagnostics()}"
         )
 
     def ensure_nat_rules(self, subnet: str) -> None:
@@ -288,7 +313,8 @@ class WireGuardManager:
         Гарантирует ip_forward + MASQUERADE для VPN-подсети внутри контейнера.
         PostUp из wg-quick иногда не срабатывает/срабатывает со старым eth0 —
         тогда handshake есть (килобайты transfer), а интернет на телефоне нет.
-        Идемпотентно: `-C` проверяет правило перед `-A`.
+        Идемпотентно: `-C` проверяет правило перед `-A`. Обёрнуто в timeout,
+        чтобы docker exec не подвешивал HTTP-запрос панели.
         """
         container = self._get_container()
         if container is None:
@@ -296,22 +322,23 @@ class WireGuardManager:
 
         network_cidr = subnet if "/" in subnet else f"{subnet}/24"
         script = f"""
-set -e
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-iptables -P FORWARD ACCEPT
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT
 iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o wg0 -j ACCEPT
-# Убираем устаревший MASQUERADE -o eth0, если остался от старых конфигов
 iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || true
 iptables -t nat -C POSTROUTING -s {network_cidr} -j MASQUERADE 2>/dev/null \\
   || iptables -t nat -A POSTROUTING -s {network_cidr} -j MASQUERADE
 iptables -t nat -S POSTROUTING
 """
-        exit_code, output = container.exec_run(["bash", "-c", script])
+        exit_code, output = container.exec_run(
+            ["timeout", "15", "bash", "-c", script]
+        )
         text = output.decode("utf-8", "replace")
         if exit_code != 0:
             raise WireGuardDockerError(
-                f"Не удалось применить NAT/forwarding внутри WireGuard-контейнера: {text}"
+                f"Не удалось применить NAT/forwarding внутри WireGuard-контейнера "
+                f"(код {exit_code}): {text}"
             )
         logger.info("NAT/forwarding WireGuard применены: %s", text.strip().replace("\n", " | "))
 

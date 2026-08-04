@@ -148,7 +148,10 @@ WG_KEEPALIVE_SECONDS: int = 25
 # на части LTE/операторов даёт handshake OK, но сайты «не открываются»
 # (чёрный экран / вечная загрузка) из‑за потери больших пакетов.
 WG_CLIENT_MTU: int = 1280
-DOCKER_WG_START_TIMEOUT_SECONDS: float = 20.0
+DOCKER_WG_START_TIMEOUT_SECONDS: float = 45.0
+# linuxserver entrypoint + wg-quick на холодном VPS могут поднять wg0
+# дольше 15с — короткий таймаут выглядел как «страница зависла / wg0 не поднялся».
+DOCKER_WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
 
 WG_SERVER_CONFIG_TABLE_NAME: str = "wg_server_config"
 EXPECTED_WG_SERVER_CONFIG_COLUMNS: dict[str, str] = {

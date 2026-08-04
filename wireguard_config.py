@@ -58,33 +58,24 @@ def render_server_config(
     Строит содержимое server-side wg0.conf: один [Interface] и по одному
     [Peer] блоку на каждого зарегистрированного клиента.
 
-    PostUp/PostDown включают forwarding и NAT для трафика из туннеля.
-    MASQUERADE вешаем на source VPN-подсети без привязки к eth0/ens*:
-    иначе типичный симптом — handshake есть (1–3 KiB transfer), а сайты
-    на телефоне не открываются.
+    PostUp/PostDown — только простые iptables-команды.
+    Сложный PostUp (sysctl / `iptables -C || -A`) на части образов linuxserver
+    зависал внутри wg-quick → интерфейс не поднимался → страница setup в
+    панели «висела». Надёжный NAT дожимает ensure_nat_rules() после старта.
     """
     _, prefix = _subnet_base_and_prefix(subnet)
     network_cidr = subnet if "/" in subnet else f"{subnet}/{prefix}"
-    post_up = (
-        "sysctl -w net.ipv4.ip_forward=1; "
-        "iptables -P FORWARD ACCEPT; "
-        "iptables -A FORWARD -i wg0 -j ACCEPT; "
-        "iptables -A FORWARD -o wg0 -j ACCEPT; "
-        f"iptables -t nat -C POSTROUTING -s {network_cidr} -j MASQUERADE 2>/dev/null || "
-        f"iptables -t nat -A POSTROUTING -s {network_cidr} -j MASQUERADE"
-    )
-    post_down = (
-        "iptables -D FORWARD -i wg0 -j ACCEPT; "
-        "iptables -D FORWARD -o wg0 -j ACCEPT; "
-        f"iptables -t nat -D POSTROUTING -s {network_cidr} -j MASQUERADE"
-    )
     lines = [
         "[Interface]",
         f"PrivateKey = {server_private_key}",
         f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
-        f"PostUp = {post_up}",
-        f"PostDown = {post_down}",
+        "PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; "
+        "iptables -A FORWARD -o wg0 -j ACCEPT; "
+        f"iptables -t nat -A POSTROUTING -s {network_cidr} -j MASQUERADE",
+        "PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; "
+        "iptables -D FORWARD -o wg0 -j ACCEPT; "
+        f"iptables -t nat -D POSTROUTING -s {network_cidr} -j MASQUERADE",
         "",
     ]
     for peer in peers:
