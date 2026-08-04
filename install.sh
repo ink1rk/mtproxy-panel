@@ -605,10 +605,10 @@ ensure_wireguard_kernel_support() {
 }
 
 # ---------------------------------------------------------------------------
-# 8. Firewall: открываем порт самой панели, если активен ufw. Порты,
-#    публикуемые Docker'ом (-p) для MTProxy/WireGuard/Xray контейнеров,
-#    ufw обычно не блокирует — Docker управляет своими iptables-правилами
-#    независимо от ufw, поэтому их отдельно открывать не требуется.
+# 8. Firewall: при активном ufw открываем порты панели и VPN по умолчанию.
+#    Docker обычно пробивает свои -p через iptables сам, но на части Ubuntu
+#    (и при ufw-docker конфликтах) без явного allow клиенты с телефона
+#    просто не достучатся — снаружи «ничего не открывается».
 # ---------------------------------------------------------------------------
 ensure_firewall_allows_panel() {
     if ! command -v ufw >/dev/null 2>&1; then
@@ -617,8 +617,10 @@ ensure_firewall_allows_panel() {
     if ! as_root ufw status 2>/dev/null | grep -qi "Status: active"; then
         return
     fi
-    log "Обнаружен активный ufw — открываю порт панели ${APP_PORT}/tcp."
+    log "Обнаружен активный ufw — открываю порты панели и VPN по умолчанию."
     as_root ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+    as_root ufw allow 51820/udp >/dev/null 2>&1 || true   # WireGuard
+    as_root ufw allow 8443/tcp >/dev/null 2>&1 || true    # VLESS+REALITY
 }
 
 # ---------------------------------------------------------------------------
@@ -629,6 +631,7 @@ main() {
     ensure_repo_up_to_date
     ensure_python
     ensure_docker
+    ensure_docker_images
     ensure_wireguard_kernel_support
     ensure_firewall_allows_panel
     ensure_project_structure
