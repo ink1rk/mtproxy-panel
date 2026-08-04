@@ -1,6 +1,8 @@
 """
-Сервисный слой VPN: native WireGuard (wg-quick) и native Xray (systemd).
-MTProxy остаётся в Docker и живёт в service.py / mtproxy.py.
+Сервисный слой VPN:
+  WireGuard — Docker (схема wg-easy: bridge + PostUp MASQUERADE -o eth0)
+  Xray — native systemd
+  MTProxy — Docker (service.py / mtproxy.py)
 """
 from __future__ import annotations
 
@@ -61,7 +63,7 @@ def _require_health(report: vpn_health.HealthReport) -> None:
 # WireGuard
 # ---------------------------------------------------------------------------
 class WireGuardService:
-    """Оркестрирует native WireGuard (systemd wg-quick@wg0 + nftables)."""
+    """Оркестрирует WireGuard в Docker (как wg-easy)."""
 
     def __init__(self) -> None:
         self._repository = WireGuardRepository()

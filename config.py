@@ -132,21 +132,24 @@ EXPECTED_ADMIN_USERS_COLUMNS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# WireGuard VPN (native: wireguard-tools + systemd wg-quick)
+# WireGuard VPN — Docker, схема как у wg-easy (bridge + PostUp MASQUERADE -o eth0)
 # ---------------------------------------------------------------------------
 WG_CONFIG_DIR: Path = DATA_DIR / "wireguard"
 WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+WG_DOCKER_IMAGE: str = "lscr.io/linuxserver/wireguard:latest"
+WG_CONTAINER_NAME: str = "wg_server"
 WG_INTERFACE_NAME: str = "wg0"
-WG_SYSTEM_CONF_PATH: str = f"/etc/wireguard/{WG_INTERFACE_NAME}.conf"
-WG_SYSTEMD_UNIT: str = f"wg-quick@{WG_INTERFACE_NAME}.service"
+# Legacy native unit — панель его глушит, чтобы не занимал UDP-порт.
+WG_SYSTEMD_UNIT: str = "wg-quick@wg0.service"
 WG_DEFAULT_PORT: int = 51820
 WG_DEFAULT_SUBNET: str = "10.66.0.0/24"
 WG_DEFAULT_DNS: str = "1.1.1.1"
 WG_KEEPALIVE_SECONDS: int = 25
-# 1280 — безопасный MTU для мобильных сетей/CGNAT.
-WG_CLIENT_MTU: int = 1280
-WG_INTERFACE_TIMEOUT_SECONDS: float = 30.0
+# Как дефолт wg-easy (1420). 1280 оставляем опцией при проблемах с LTE.
+WG_CLIENT_MTU: int = 1420
+WG_START_TIMEOUT_SECONDS: float = 45.0
+WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
 
 WG_SERVER_CONFIG_TABLE_NAME: str = "wg_server_config"
 EXPECTED_WG_SERVER_CONFIG_COLUMNS: dict[str, str] = {

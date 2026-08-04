@@ -104,87 +104,12 @@ class FirewallManager:
         except host_exec.HostExecError as exc:
             logger.warning("Не удалось сохранить nftables ruleset: %s", exc)
 
-        self.apply_wireguard_routing(wg_subnet)
-
+        # WireGuard NAT живёт ВНУТРИ Docker-контейнера (как wg-easy).
+        # На хосте только открываем порты в nft input — без host MASQUERADE.
         logger.info(
-            "firewall ready: wan=%s wg_port=%s xray_port=%s subnet=%s",
-            detect_wan_interface(), wg_port, xray_port, wg_subnet,
+            "firewall input ready: wg_port=%s xray_port=%s",
+            wg_port, xray_port,
         )
-
-    def apply_wireguard_routing(self, subnet: str | None) -> None:
-        """Чистая IPv4-маршрутизация WG → WAN. Идемпотентно."""
-        wan = _escape_iface(detect_wan_interface())
-        wg = _escape_iface(config.WG_INTERFACE_NAME)
-        network_cidr = ""
-        if subnet:
-            network_cidr = subnet if "/" in subnet else f"{subnet}/24"
-
-        script = f"""
-set -euo pipefail
-WAN="{wan}"
-WG="{wg}"
-SUBNET="{network_cidr}"
-
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null 2>&1 || true
-sysctl -w net.ipv4.conf.all.src_valid_mark=1 >/dev/null 2>&1 || true
-for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo 2 > "$f" 2>/dev/null || true; done
-
-iptables -P FORWARD ACCEPT 2>/dev/null || true
-
-# Убираем старые наши правила (чтобы не копить дубликаты)
-while iptables -D FORWARD -i "$WG" -j ACCEPT 2>/dev/null; do :; done
-while iptables -D FORWARD -o "$WG" -j ACCEPT 2>/dev/null; do :; done
-iptables -I FORWARD 1 -i "$WG" -j ACCEPT
-iptables -I FORWARD 1 -o "$WG" -j ACCEPT
-
-if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
-  while iptables -D DOCKER-USER -i "$WG" -j ACCEPT 2>/dev/null; do :; done
-  while iptables -D DOCKER-USER -o "$WG" -j ACCEPT 2>/dev/null; do :; done
-  iptables -I DOCKER-USER 1 -i "$WG" -j ACCEPT
-  iptables -I DOCKER-USER 1 -o "$WG" -j ACCEPT
-fi
-
-if [[ -n "$SUBNET" ]]; then
-  # Сносим ВСЕ старые MASQUERADE нашей подсети (в т.ч. ! -o wg0)
-  while iptables -t nat -D POSTROUTING -s "$SUBNET" ! -o "$WG" -j MASQUERADE 2>/dev/null; do :; done
-  while iptables -t nat -D POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE 2>/dev/null; do :; done
-  while iptables -t nat -D POSTROUTING -s "$SUBNET" -j MASQUERADE 2>/dev/null; do :; done
-  # Единственное правильное правило: SNAT только на WAN
-  iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE
-fi
-
-# MSS clamp
-while iptables -t mangle -D FORWARD -o "$WG" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do :; done
-while iptables -t mangle -D FORWARD -i "$WG" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do :; done
-iptables -t mangle -A FORWARD -o "$WG" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-iptables -t mangle -A FORWARD -i "$WG" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-
-echo "WAN=$WAN"
-echo "ROUTE_TEST=$(ip -4 route get 1.1.1.1 from 10.66.0.2 iif $WG 2>&1 | tr '\\n' ' ')"
-echo "FORWARD=$(iptables -S FORWARD | head -6 | tr '\\n' ';')"
-echo "NAT=$(iptables -t nat -S POSTROUTING | tr '\\n' ';')"
-"""
-        try:
-            result = host_exec.run(["bash", "-c", script], timeout=45.0)
-            logger.info("WG routing applied: %s", result.stdout.strip())
-        except host_exec.HostExecError as exc:
-            raise FirewallError(f"Не удалось применить маршрутизацию WG: {exc}") from exc
-
-        try:
-            host_exec.write_root_file(
-                config.SYSCTL_FORWARD_PATH,
-                (
-                    "net.ipv4.ip_forward=1\n"
-                    "net.ipv4.conf.all.rp_filter=2\n"
-                    "net.ipv4.conf.default.rp_filter=2\n"
-                    "net.ipv4.conf.all.src_valid_mark=1\n"
-                ),
-                mode=0o644,
-            )
-        except host_exec.HostExecError as exc:
-            logger.warning("sysctl persist: %s", exc)
 
     def clear_wireguard(self) -> None:
         if self._table_exists():

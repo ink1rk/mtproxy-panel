@@ -4,10 +4,10 @@
 #
 # Стек:
 #   - FastAPI panel (systemd, root — нужен для wg/nft/xray)
-#   - WireGuard: native wireguard-tools + systemd wg-quick@wg0
+#   - WireGuard: Docker (схема wg-easy: bridge + PostUp MASQUERADE -o eth0)
 #   - Xray: native binary + systemd xray.service
 #   - MTProxy: Docker (один контейнер на прокси)
-#   - Firewall/NAT: nftables
+#   - Firewall: nftables (порты); WG-NAT внутри контейнера
 #
 # Запуск: bash install.sh
 
@@ -227,15 +227,21 @@ ensure_docker() {
 }
 
 ensure_mtproxy_image() {
-    local image="telegrammessenger/proxy:latest"
-    if as_root docker image inspect "${image}" >/dev/null 2>&1; then
-        log "Docker-образ MTProxy уже есть: ${image}"
-        return
-    fi
-    log "Скачиваю Docker-образ MTProxy (${image})..."
-    if ! as_root docker pull "${image}"; then
-        fail "Не удалось скачать ${image}. Проверьте сеть/Docker Hub и повторите."
-    fi
+    local images=(
+        "telegrammessenger/proxy:latest"
+        "lscr.io/linuxserver/wireguard:latest"
+    )
+    local image
+    for image in "${images[@]}"; do
+        if as_root docker image inspect "${image}" >/dev/null 2>&1; then
+            log "Docker-образ уже есть: ${image}"
+            continue
+        fi
+        log "Скачиваю Docker-образ ${image}..."
+        if ! as_root docker pull "${image}"; then
+            fail "Не удалось скачать ${image}. Проверьте сеть/Docker Hub и повторите."
+        fi
+    done
 }
 
 remove_legacy_docker_vpn() {
@@ -276,6 +282,15 @@ ensure_vpn_stack() {
 
     as_root mkdir -p /etc/wireguard /usr/local/etc/xray /etc/nftables.d
     as_root chmod 700 /etc/wireguard
+
+    # WireGuard теперь в Docker (как wg-easy). Native wg-quick не должен
+    # занимать UDP 51820.
+    if has_systemd; then
+        as_root systemctl disable --now wg-quick@wg0 >/dev/null 2>&1 || true
+        as_root systemctl disable --now mtproxy-wg-forward.service >/dev/null 2>&1 || true
+    fi
+    as_root wg-quick down wg0 >/dev/null 2>&1 || true
+    as_root ip link delete wg0 >/dev/null 2>&1 || true
 
     # nftables service + include наших правил
     if has_systemd; then
@@ -647,14 +662,13 @@ EOF
 
 verify_vpn_binaries() {
     local missing=()
-    command -v wg >/dev/null 2>&1 || missing+=("wg")
-    command -v wg-quick >/dev/null 2>&1 || missing+=("wg-quick")
+    command -v docker >/dev/null 2>&1 || missing+=("docker")
     command -v nft >/dev/null 2>&1 || missing+=("nft")
     [[ -x /usr/local/bin/xray ]] || missing+=("xray")
     if (( ${#missing[@]} > 0 )); then
         fail "Не найдены компоненты VPN-стека: ${missing[*]}"
     fi
-    log "Проверка VPN-бинарников пройдена (wg, wg-quick, nft, xray)."
+    log "Проверка VPN-стека пройдена (docker, nft, xray)."
 }
 
 # ---------------------------------------------------------------------------
@@ -688,7 +702,7 @@ main() {
     log "==============================================================="
     log " MTProxy Control Panel (native VPN stack) установлена."
     log " Откройте в браузере: http://<IP_ЭТОГО_СЕРВЕРА>:${APP_PORT}/"
-    log " WireGuard: systemd wg-quick@wg0 + nftables NAT"
+    log " WireGuard: Docker wg_server (схема как wg-easy)"
     log " VLESS:     systemd xray.service"
     log " MTProxy:   Docker (telegrammessenger/proxy)"
     if grep -q "СОЗДАНА ПЕРВАЯ УЧЁТНАЯ ЗАПИСЬ" "${APP_LOG}" 2>/dev/null; then
@@ -701,7 +715,7 @@ main() {
     if has_systemd; then
         log " Статус панели:   systemctl status ${SYSTEMD_SERVICE_NAME}"
         log " Логи панели:     journalctl -u ${SYSTEMD_SERVICE_NAME} -f"
-        log " WireGuard:       systemctl status wg-quick@wg0"
+        log " WireGuard:       docker exec wg_server wg show"
         log " Xray:            systemctl status xray"
         log " Перезапуск:      systemctl restart ${SYSTEMD_SERVICE_NAME}"
     else

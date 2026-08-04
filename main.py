@@ -68,8 +68,8 @@ logger = logging.getLogger(__name__)
 
 def _ensure_vpn_servers_running() -> None:
     """
-    Если WireGuard и/или Xray уже настроены — поднимает native systemd-сервисы
-    (wg-quick@wg0 / xray) при старте панели. Ошибки только логируются.
+    Если WireGuard и/или Xray уже настроены — поднимает их при старте панели
+    (WG Docker / Xray systemd). Ошибки только логируются.
     """
     try:
         from vpn_service import VpnServiceError, WireGuardService
