@@ -4,10 +4,10 @@
 #
 # Стек:
 #   - FastAPI panel (systemd, root — нужен для wg/nft/xray)
-#   - WireGuard: Docker bridge + PostUp как wg-easy v14 (+ host fallback)
+#   - WireGuard: native wg-quick@wg0 (PostUp как wg-easy + DOCKER-USER)
 #   - Xray: native binary + systemd xray.service
 #   - MTProxy: Docker (один контейнер на прокси)
-#   - Firewall: nftables (порты); WG-NAT PostUp внутри контейнера
+#   - Firewall: nftables input; WG-NAT через iptables PostUp
 #
 # Запуск: bash install.sh
 
@@ -245,11 +245,13 @@ ensure_mtproxy_image() {
 }
 
 remove_legacy_docker_vpn() {
-    # Xray больше не в Docker — только xray_server. wg_server — ТЕКУЩИЙ стек, не трогаем.
-    if as_root docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "xray_server"; then
-        log "Удаляю legacy Docker-контейнер xray_server."
-        as_root docker rm -f "xray_server" >/dev/null 2>&1 || true
-    fi
+    # WG и Xray больше не в Docker — убираем старые контейнеры.
+    for name in wg_server xray_server; do
+        if as_root docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${name}"; then
+            log "Удаляю legacy Docker-контейнер ${name}."
+            as_root docker rm -f "${name}" >/dev/null 2>&1 || true
+        fi
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -281,14 +283,11 @@ ensure_vpn_stack() {
     as_root mkdir -p /etc/wireguard /usr/local/etc/xray /etc/nftables.d
     as_root chmod 700 /etc/wireguard
 
-    # WireGuard теперь в Docker (как wg-easy). Native wg-quick не должен
-    # занимать UDP 51820.
+    # WireGuard — native wg-quick@wg0. Docker wg_server глушим.
+    as_root docker rm -f wg_server >/dev/null 2>&1 || true
     if has_systemd; then
-        as_root systemctl disable --now wg-quick@wg0 >/dev/null 2>&1 || true
-        as_root systemctl disable --now mtproxy-wg-forward.service >/dev/null 2>&1 || true
+        as_root systemctl enable mtproxy-wg-forward.service >/dev/null 2>&1 || true
     fi
-    as_root wg-quick down wg0 >/dev/null 2>&1 || true
-    as_root ip link delete wg0 >/dev/null 2>&1 || true
 
     # nftables service + include наших правил
     if has_systemd; then
@@ -700,7 +699,7 @@ main() {
     log "==============================================================="
     log " MTProxy Control Panel (native VPN stack) установлена."
     log " Откройте в браузере: http://<IP_ЭТОГО_СЕРВЕРА>:${APP_PORT}/"
-    log " WireGuard: Docker wg_server (wg-easy PostUp + bridge/host)"
+    log " WireGuard: native wg-quick@wg0 (PostUp как wg-easy)"
     log " VLESS:     systemd xray.service"
     log " MTProxy:   Docker (telegrammessenger/proxy)"
     if grep -q "СОЗДАНА ПЕРВАЯ УЧЁТНАЯ ЗАПИСЬ" "${APP_LOG}" 2>/dev/null; then

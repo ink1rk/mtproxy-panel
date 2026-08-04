@@ -1,6 +1,6 @@
 """
 Проверки после setup VPN-сервиса.
-WireGuard — Docker (wg-easy style); Xray — native systemd.
+WireGuard — native wg-quick; Xray — native systemd.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 import config
 import host_exec
-from docker_iptables import docker_nat_chain_exists
+from firewall_manager import detect_wan_interface
 
 logger = logging.getLogger(__name__)
 
@@ -40,22 +40,18 @@ class HealthReport:
         return "\n".join(lines)
 
 
-def _check_docker_running(name: str) -> CheckResult:
-    result = host_exec.run(
-        ["docker", "inspect", "-f", "{{.State.Status}}", name],
-        check=False,
-    )
-    status = (result.stdout or "").strip()
-    return CheckResult(
-        name="service active",
-        ok=status == "running",
-        detail=f"docker {name} -> {status or 'missing'}",
-    )
-
-
 def _check_systemd_active(unit: str) -> CheckResult:
     result = host_exec.systemctl("is-active", unit, check=False)
     state = (result.stdout or result.stderr).strip()
+    # wg0 may be up via wg-quick without unit "active" briefly
+    if state != "active" and unit == config.WG_SYSTEMD_UNIT:
+        show = host_exec.run(["wg", "show", config.WG_INTERFACE_NAME], check=False)
+        if show.ok:
+            return CheckResult(
+                name="service active",
+                ok=True,
+                detail=f"{unit} -> {state or 'unknown'} (wg0 up)",
+            )
     return CheckResult(
         name="service active",
         ok=state == "active",
@@ -91,51 +87,31 @@ def _check_port(port: int, proto: str) -> CheckResult:
     )
 
 
-def _check_wg_inside(subnet: str, listen_port: int) -> CheckResult:
-    show = host_exec.run(
-        ["docker", "exec", config.WG_CONTAINER_NAME, "wg", "show"],
-        check=False,
-    )
-    nat = host_exec.run(
-        [
-            "docker", "exec", config.WG_CONTAINER_NAME,
-            "iptables", "-t", "nat", "-S", "POSTROUTING",
-        ],
-        check=False,
-    )
-    fwd = host_exec.run(
-        ["docker", "exec", config.WG_CONTAINER_NAME, "iptables", "-S", "FORWARD"],
-        check=False,
-    )
-    mode = host_exec.run(
-        [
-            "docker", "inspect", "-f",
-            "{{.HostConfig.NetworkMode}}", config.WG_CONTAINER_NAME,
-        ],
-        check=False,
-    )
+def _check_wg_native(subnet: str, listen_port: int) -> CheckResult:
+    wan = detect_wan_interface()
+    show = host_exec.run(["wg", "show", config.WG_INTERFACE_NAME], check=False)
+    nat = host_exec.run(["iptables", "-t", "nat", "-S", "POSTROUTING"], check=False)
+    fwd = host_exec.run(["iptables", "-S", "FORWARD"], check=False)
+    docker_user = host_exec.run(["iptables", "-S", "DOCKER-USER"], check=False)
     has_iface = show.ok and "interface:" in show.stdout
-    has_masq = nat.ok and "MASQUERADE" in nat.stdout
+    has_masq = (
+        nat.ok
+        and "MASQUERADE" in nat.stdout
+        and subnet.split("/")[0].rsplit(".", 1)[0] in nat.stdout
+    )
     has_fwd = fwd.ok and "-i wg0" in fwd.stdout and "-o wg0" in fwd.stdout
-    net_mode = (mode.stdout or "").strip() or "?"
+    has_du = (not docker_user.ok) or (
+        "-i wg0" in docker_user.stdout and "-o wg0" in docker_user.stdout
+    )
     ok = has_iface and has_masq and has_fwd
     detail = (
         f"wg0={'yes' if has_iface else 'NO'} "
         f"masq={'yes' if has_masq else 'NO'} "
-        f"fwd_wg0={'yes' if has_fwd else 'NO'} "
-        f"net={net_mode} subnet={subnet} udp={listen_port} "
-        f"want_wan={config.WG_DOCKER_WAN_IFACE}"
+        f"fwd={'yes' if has_fwd else 'NO'} "
+        f"docker-user={'yes' if has_du else 'NO'} "
+        f"wan={wan} subnet={subnet} udp={listen_port}"
     )
     return CheckResult(name="routing/nat", ok=ok, detail=detail)
-
-
-def _check_docker_dnat() -> CheckResult:
-    exists = docker_nat_chain_exists()
-    return CheckResult(
-        name="docker iptables",
-        ok=True,  # info: host-fallback возможен без DOCKER
-        detail=f"nat/DOCKER={'yes' if exists else 'NO (bridge publish broken)'}",
-    )
 
 
 def _check_external_connectivity() -> CheckResult:
@@ -163,10 +139,9 @@ def _check_external_connectivity() -> CheckResult:
 
 def check_wireguard(*, listen_port: int, subnet: str) -> HealthReport:
     report = HealthReport(service="wireguard")
-    report.checks.append(_check_docker_running(config.WG_CONTAINER_NAME))
+    report.checks.append(_check_systemd_active(config.WG_SYSTEMD_UNIT))
     report.checks.append(_check_port(listen_port, "udp"))
-    report.checks.append(_check_wg_inside(subnet, listen_port))
-    report.checks.append(_check_docker_dnat())
+    report.checks.append(_check_wg_native(subnet, listen_port))
     report.checks.append(_check_external_connectivity())
     if not report.ok:
         logger.error("%s", report.format())

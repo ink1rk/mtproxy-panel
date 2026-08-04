@@ -132,30 +132,27 @@ EXPECTED_ADMIN_USERS_COLUMNS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# WireGuard VPN — Docker + PostUp MASQUERADE (как wg-easy)
+# WireGuard VPN — native wg-quick@wg0 + PostUp как wg-easy
 # ---------------------------------------------------------------------------
 WG_CONFIG_DIR: Path = DATA_DIR / "wireguard"
 WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+# Legacy Docker (больше не используется; manager делает docker rm -f).
 WG_DOCKER_IMAGE: str = "lscr.io/linuxserver/wireguard:latest"
 WG_CONTAINER_NAME: str = "wg_server"
 WG_INTERFACE_NAME: str = "wg0"
-# Legacy native unit — панель его глушит, чтобы не занимал UDP-порт.
 WG_SYSTEMD_UNIT: str = "wg-quick@wg0.service"
 WG_DEFAULT_PORT: int = 51820
 WG_DEFAULT_SUBNET: str = "10.66.0.0/24"
 WG_DEFAULT_DNS: str = "1.1.1.1"
 WG_KEEPALIVE_SECONDS: int = 25
-# Как дефолт wg-easy (1420). 1280 оставляем опцией при проблемах с LTE.
+# Как дефолт wg-easy (1420).
 WG_CLIENT_MTU: int = 1420
 WG_START_TIMEOUT_SECONDS: float = 45.0
 WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
-# Как официальный wg-easy: bridge + published UDP.
-# Перед стартом чиним Docker iptables (iptables-legacy), иначе DNAT падает.
-# Если bridge всё равно не встаёт — manager делает fallback на host.
-WG_NETWORK_MODE: str = "bridge"
-# WG_DEVICE у wg-easy: eth0 внутри контейнера (docker bridge iface).
+# WAN для MASQUERADE; runtime ещё раз определяет через default route.
 WG_DOCKER_WAN_IFACE: str = "eth0"
+WG_NETWORK_MODE: str = "native"
 
 WG_SERVER_CONFIG_TABLE_NAME: str = "wg_server_config"
 EXPECTED_WG_SERVER_CONFIG_COLUMNS: dict[str, str] = {
