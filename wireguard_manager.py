@@ -1,13 +1,13 @@
 """
-WireGuard в Docker — та же схема, что у wg-easy (weejewel / wg-easy):
+WireGuard в Docker — схема как у wg-easy (PostUp MASQUERADE -o <WAN>):
 
-  - bridge network + published UDP port
-  - NET_ADMIN + ip_forward + src_valid_mark
-  - PostUp MASQUERADE -o eth0 ВНУТРИ контейнера
+  - NET_ADMIN + ip_forward
   - наш wg0.conf (без PEERS= у linuxserver)
+  - network_mode=host по умолчанию: не зависит от сломанной
+    цепочки iptables DOCKER/DNAT на хосте
 
-Native wg-quick@wg0 на хосте отключается: он конфликтовал с Docker/nft
-и давал handshake без интернета. Xray остаётся native; MTProxy — Docker.
+Native wg-quick@wg0 на хосте отключается: конфликт по UDP 51820.
+Xray остаётся native; MTProxy — Docker.
 """
 from __future__ import annotations
 
@@ -75,6 +75,45 @@ class WireGuardManager:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Не удалось остановить native wg-quick: %s", exc)
 
+    def _force_remove_container(self) -> None:
+        """Всегда убираем stale wg_server (в т.ч. status=created после DNAT fail)."""
+        container = self._get_container()
+        if container is None:
+            host_exec.run(
+                ["docker", "rm", "-f", config.WG_CONTAINER_NAME],
+                check=False,
+            )
+            return
+        try:
+            container.remove(force=True)
+        except APIError as exc:
+            logger.warning(
+                "API remove WG failed (%s), docker rm -f",
+                format_docker_api_error(exc),
+            )
+            host_exec.run(
+                ["docker", "rm", "-f", config.WG_CONTAINER_NAME],
+                check=False,
+            )
+
+    def _container_network_mode(self, container: Container) -> str:
+        try:
+            container.reload()
+        except APIError:
+            return ""
+        return str((container.attrs.get("HostConfig") or {}).get("NetworkMode") or "")
+
+    def _ensure_host_forwarding(self) -> None:
+        """sysctl в host-network режиме задаётся на хосте, не через Docker."""
+        host_exec.run(
+            ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+            check=False,
+        )
+        host_exec.run(
+            ["sysctl", "-w", "net.ipv4.conf.all.src_valid_mark=1"],
+            check=False,
+        )
+
     def write_config(self, conf_text: str) -> None:
         wg_confs = config.WG_CONFIG_DIR / "wg_confs"
         wg_confs.mkdir(parents=True, exist_ok=True)
@@ -95,13 +134,15 @@ class WireGuardManager:
     ) -> None:
         self._stop_native_wg_quick()
         self.write_config(conf_text)
+        if config.WG_NETWORK_MODE == "host":
+            self._ensure_host_forwarding()
 
         container = self._get_container()
         if container is not None:
             container.reload()
-            if container.status == "running":
+            mode = self._container_network_mode(container)
+            if container.status == "running" and mode == config.WG_NETWORK_MODE:
                 self._ensure_config_writable(container)
-                # Конфиг на диске уже новый — применяем peer-ов и NAT.
                 code, out = container.exec_run(
                     [
                         "bash", "-c",
@@ -117,31 +158,27 @@ class WireGuardManager:
                 self._ensure_nat_inside(subnet)
                 return
             logger.warning(
-                "Контейнер WG в статусе %s — пересоздаю", container.status,
+                "Контейнер WG status=%s network_mode=%s (want %s) — пересоздаю",
+                container.status,
+                mode or "?",
+                config.WG_NETWORK_MODE,
             )
-            try:
-                container.remove(force=True)
-            except APIError as exc:
-                raise WireGuardError(
-                    f"Не удалось удалить контейнер WG: {format_docker_api_error(exc)}"
-                ) from exc
+            self._force_remove_container()
 
         logger.info(
-            "Создаю WireGuard Docker (wg-easy style) udp/%d", listen_port,
+            "Создаю WireGuard Docker network_mode=%s udp/%d wan=%s",
+            config.WG_NETWORK_MODE,
+            listen_port,
+            config.WG_DOCKER_WAN_IFACE,
         )
         try:
             ensure_image(self._client, config.WG_DOCKER_IMAGE)
-            run_kwargs = dict(
+            run_kwargs: dict = dict(
                 image=config.WG_DOCKER_IMAGE,
                 name=config.WG_CONTAINER_NAME,
                 detach=True,
                 restart_policy={"Name": "unless-stopped"},
                 cap_add=["NET_ADMIN", "SYS_MODULE"],
-                sysctls={
-                    "net.ipv4.conf.all.src_valid_mark": "1",
-                    "net.ipv4.ip_forward": "1",
-                },
-                ports={f"{listen_port}/udp": listen_port},
                 # ВАЖНО: PEERS не задаём — иначе linuxserver затрёт наш wg0.conf
                 environment={"PUID": "0", "PGID": "0"},
                 volumes={
@@ -149,7 +186,16 @@ class WireGuardManager:
                     "/lib/modules": {"bind": "/lib/modules", "mode": "ro"},
                 },
                 log_config=_log_config(),
+                network_mode=config.WG_NETWORK_MODE,
             )
+            if config.WG_NETWORK_MODE != "host":
+                # bridge: нужен рабочий iptables DOCKER chain
+                run_kwargs["ports"] = {f"{listen_port}/udp": listen_port}
+                run_kwargs["sysctls"] = {
+                    "net.ipv4.conf.all.src_valid_mark": "1",
+                    "net.ipv4.ip_forward": "1",
+                }
+
             try:
                 container = self._client.containers.run(
                     **run_kwargs,
@@ -157,13 +203,24 @@ class WireGuardManager:
                 )
             except APIError as tun_exc:
                 logger.warning(
-                    "WG без /dev/net/tun (%s), пробую без devices",
+                    "WG с /dev/net/tun не стартовал (%s), пробую без devices",
                     format_docker_api_error(tun_exc),
                 )
-                container = self._client.containers.run(**run_kwargs)
+                # Критично: после неудачного start остаётся container status=created
+                # с тем же именем → 409 Conflict на повторном create.
+                self._force_remove_container()
+                try:
+                    container = self._client.containers.run(**run_kwargs)
+                except APIError as exc:
+                    self._force_remove_container()
+                    raise WireGuardError(
+                        f"Не удалось создать контейнер WG: {format_docker_api_error(exc)}"
+                    ) from exc
         except RuntimeError as exc:
+            self._force_remove_container()
             raise WireGuardError(str(exc)) from exc
         except APIError as exc:
+            self._force_remove_container()
             raise WireGuardError(
                 f"Не удалось создать контейнер WG: {format_docker_api_error(exc)}"
             ) from exc
@@ -230,20 +287,21 @@ class WireGuardManager:
         )
 
     def _ensure_nat_inside(self, subnet: str) -> None:
-        """Дожимает NAT внутри контейнера (как WG_POST_UP у wg-easy)."""
+        """Дожимает NAT (как WG_POST_UP у wg-easy) на WAN-интерфейсе."""
         container = self._get_container()
         if container is None:
             return
         network_cidr = subnet if "/" in subnet else f"{subnet}/24"
+        wan = config.WG_DOCKER_WAN_IFACE
         script = f"""
 set -e
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT
 iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o wg0 -j ACCEPT
-iptables -t nat -C POSTROUTING -s {network_cidr} -o eth0 -j MASQUERADE 2>/dev/null \\
-  || iptables -t nat -A POSTROUTING -s {network_cidr} -o eth0 -j MASQUERADE
+iptables -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE 2>/dev/null \\
+  || iptables -t nat -A POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
-echo NAT_OK
+echo NAT_OK wan={wan}
 iptables -t nat -S POSTROUTING
 wg show || true
 """
@@ -257,6 +315,11 @@ wg show || true
         self.write_config(conf_text)
         container = self._get_container()
         if container is None or not self.is_running():
+            self.ensure_server_running(
+                conf_text=conf_text, listen_port=listen_port, subnet=subnet,
+            )
+            return
+        if self._container_network_mode(container) != config.WG_NETWORK_MODE:
             self.ensure_server_running(
                 conf_text=conf_text, listen_port=listen_port, subnet=subnet,
             )
@@ -334,10 +397,4 @@ wg show || true
         self.wait_until_interface_ready()
 
     def remove_server(self) -> None:
-        container = self._get_container()
-        if container is None:
-            return
-        try:
-            container.remove(force=True)
-        except APIError as exc:
-            raise WireGuardError(f"Не удалось удалить контейнер WG: {exc}") from exc
+        self._force_remove_container()

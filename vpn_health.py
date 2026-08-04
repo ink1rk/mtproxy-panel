@@ -91,6 +91,7 @@ def _check_port(port: int, proto: str) -> CheckResult:
 
 
 def _check_wg_inside(subnet: str) -> CheckResult:
+    wan = config.WG_DOCKER_WAN_IFACE
     show = host_exec.run(
         ["docker", "exec", config.WG_CONTAINER_NAME, "wg", "show"],
         check=False,
@@ -104,13 +105,18 @@ def _check_wg_inside(subnet: str) -> CheckResult:
         check=False,
     )
     has_iface = show.ok and "interface:" in show.stdout
-    has_masq = nat.ok and "MASQUERADE" in nat.stdout and "eth0" in nat.stdout
+    has_masq = (
+        nat.ok
+        and "MASQUERADE" in nat.stdout
+        and (f"-o {wan}" in nat.stdout or wan in nat.stdout)
+    )
     has_fwd = fwd.ok and "-i wg0" in fwd.stdout
     ok = has_iface and has_masq and has_fwd
     detail = (
         f"wg0={'yes' if has_iface else 'NO'} "
-        f"masq_eth0={'yes' if has_masq else 'NO'} "
-        f"fwd={'yes' if has_fwd else 'NO'} subnet={subnet}"
+        f"masq_{wan}={'yes' if has_masq else 'NO'} "
+        f"fwd={'yes' if has_fwd else 'NO'} "
+        f"net={config.WG_NETWORK_MODE} subnet={subnet}"
     )
     return CheckResult(name="routing/nat", ok=ok, detail=detail)
 

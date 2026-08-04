@@ -1,6 +1,6 @@
 """
 Сервисный слой VPN:
-  WireGuard — Docker (схема wg-easy: bridge + PostUp MASQUERADE -o eth0)
+  WireGuard — Docker (host net + PostUp MASQUERADE, как wg-easy)
   Xray — native systemd
   MTProxy — Docker (service.py / mtproxy.py)
 """
@@ -63,7 +63,7 @@ def _require_health(report: vpn_health.HealthReport) -> None:
 # WireGuard
 # ---------------------------------------------------------------------------
 class WireGuardService:
-    """Оркестрирует WireGuard в Docker (как wg-easy)."""
+    """Оркестрирует WireGuard в Docker (host-network + NAT как wg-easy)."""
 
     def __init__(self) -> None:
         self._repository = WireGuardRepository()

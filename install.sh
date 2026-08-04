@@ -4,7 +4,7 @@
 #
 # Стек:
 #   - FastAPI panel (systemd, root — нужен для wg/nft/xray)
-#   - WireGuard: Docker (схема wg-easy: bridge + PostUp MASQUERADE -o eth0)
+#   - WireGuard: Docker host-network + PostUp MASQUERADE (как wg-easy)
 #   - Xray: native binary + systemd xray.service
 #   - MTProxy: Docker (один контейнер на прокси)
 #   - Firewall: nftables (порты); WG-NAT внутри контейнера
@@ -702,7 +702,7 @@ main() {
     log "==============================================================="
     log " MTProxy Control Panel (native VPN stack) установлена."
     log " Откройте в браузере: http://<IP_ЭТОГО_СЕРВЕРА>:${APP_PORT}/"
-    log " WireGuard: Docker wg_server (схема как wg-easy)"
+    log " WireGuard: Docker wg_server (host net + MASQUERADE)"
     log " VLESS:     systemd xray.service"
     log " MTProxy:   Docker (telegrammessenger/proxy)"
     if grep -q "СОЗДАНА ПЕРВАЯ УЧЁТНАЯ ЗАПИСЬ" "${APP_LOG}" 2>/dev/null; then

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Миграция на WireGuard Docker как у wg-easy.
+# Миграция WireGuard → Docker host-network + MASQUERADE -o eth0.
+# Обходит сломанную цепочку iptables DOCKER/DNAT на хосте.
 # Запуск: bash tools/fix_wg_routing.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -12,8 +13,15 @@ systemctl disable --now wg-quick@wg0 2>/dev/null || true
 wg-quick down wg0 2>/dev/null || true
 ip link delete wg0 2>/dev/null || true
 
+echo "== удаляем stale контейнер wg_server (created/exited после DNAT fail) =="
+docker rm -f wg_server 2>/dev/null || true
+
 echo "== docker image =="
 docker pull lscr.io/linuxserver/wireguard:latest
+
+echo "== host forwarding =="
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+sysctl -w net.ipv4.conf.all.src_valid_mark=1 >/dev/null || true
 
 echo "== пересоздаём контейнер через панель/python =="
 systemctl restart mtproxy-panel 2>/dev/null || true
@@ -26,12 +34,17 @@ fi
 
 venv/bin/python - <<'PY'
 from vpn_service import WireGuardService, VpnServiceError
+import config
 
 svc = WireGuardService()
 cfg = svc.get_server_config()
 if cfg is None:
     raise SystemExit("WG не настроен в панели — открой /wireguard и нажми «Настроить»")
 
+print(
+    f"network_mode={config.WG_NETWORK_MODE} wan={config.WG_DOCKER_WAN_IFACE} "
+    f"port={cfg.listen_port} subnet={cfg.subnet}"
+)
 svc._refresh_peer_client_configs(cfg)
 conf = svc._render_conf(cfg)
 svc._manager.ensure_server_running(
@@ -45,9 +58,7 @@ print(report.format())
 if not report.ok:
     raise SystemExit(1)
 
-# показать клиентский conf
 from pathlib import Path
-import config
 clients = sorted((config.WG_CONFIG_DIR / "clients").glob("*.conf"))
 for p in clients:
     print("CLIENT", p)
@@ -55,15 +66,17 @@ for p in clients:
 PY
 
 echo
-echo "== docker ps / wg show / NAT inside =="
+echo "== docker ps / network / wg show / NAT =="
 docker ps --filter name=wg_server --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+docker inspect -f 'NetworkMode={{.HostConfig.NetworkMode}}' wg_server || true
 docker exec wg_server wg show || true
 docker exec wg_server iptables -t nat -S POSTROUTING || true
 docker exec wg_server iptables -S FORWARD | head -10 || true
+ss -ulnp | grep -E ':51820\b' || echo "UDP 51820: НЕ слушается"
 
 echo
 echo "============================================"
-echo "Схема как wg-easy: Docker + MASQUERADE -o eth0"
+echo "WG: Docker network_mode=host + MASQUERADE -o eth0"
 echo "iPhone: удали старый туннель → новый QR из панели"
 echo "  AllowedIPs = 0.0.0.0/0"
 echo "Потом: docker exec wg_server wg show"

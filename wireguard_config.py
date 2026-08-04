@@ -2,8 +2,8 @@
 Генерация конфигов WireGuard.
 
 Серверный PostUp — как в wg-easy (Emile Nijssen):
-  MASQUERADE -o eth0 внутри Docker-сети контейнера.
-Именно эта схема «поставил и забыл» на отдельном VPS с wg-easy.
+  MASQUERADE -o <WAN> (по умолчанию eth0).
+При network_mode=host это реальный WAN хоста; при bridge — eth0 контейнера.
 """
 from __future__ import annotations
 
@@ -43,24 +43,22 @@ def render_server_config(
     wg0.conf для контейнера (linuxserver bare mode / как wg-easy).
 
     PostUp идентичен рабочему рецепту wg-easy:
-      iptables -t nat -A POSTROUTING -s <subnet> -o eth0 -j MASQUERADE
+      iptables -t nat -A POSTROUTING -s <subnet> -o <WAN> -j MASQUERADE
       iptables -A FORWARD -i %i -j ACCEPT
       iptables -A FORWARD -o %i -j ACCEPT
-
-    eth0 внутри контейнера — интерфейс docker-bridge; Docker сам
-    делает outer-NAT на хост. На host netns это НЕ применяется.
     """
     _, prefix = _subnet_base_and_prefix(subnet)
     network_cidr = subnet if "/" in subnet else f"{subnet}/{prefix}"
+    wan = config.WG_DOCKER_WAN_IFACE
     # Простые команды через ';'. Никаких || и внешних .sh —
     # иначе wg-quick откатывает интерфейс (как было с mtproxy-wg-nat.sh).
     post_up = (
-        f"iptables -t nat -A POSTROUTING -s {network_cidr} -o eth0 -j MASQUERADE; "
+        f"iptables -t nat -A POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE; "
         f"iptables -A FORWARD -i %i -j ACCEPT; "
         f"iptables -A FORWARD -o %i -j ACCEPT"
     )
     post_down = (
-        f"iptables -t nat -D POSTROUTING -s {network_cidr} -o eth0 -j MASQUERADE; "
+        f"iptables -t nat -D POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE; "
         f"iptables -D FORWARD -i %i -j ACCEPT; "
         f"iptables -D FORWARD -o %i -j ACCEPT"
     )

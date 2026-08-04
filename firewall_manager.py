@@ -104,8 +104,8 @@ class FirewallManager:
         except host_exec.HostExecError as exc:
             logger.warning("Не удалось сохранить nftables ruleset: %s", exc)
 
-        # WireGuard NAT живёт ВНУТРИ Docker-контейнера (как wg-easy).
-        # На хосте только открываем порты в nft input — без host MASQUERADE.
+        # WG NAT: PostUp/ensure_nat в Docker (при host net — это netns хоста).
+        # Здесь только nft input для портов — без второго MASQUERADE в nft.
         logger.info(
             "firewall input ready: wg_port=%s xray_port=%s",
             wg_port, xray_port,
