@@ -22,11 +22,10 @@ readonly HEALTHCHECK_URL="http://127.0.0.1:${APP_PORT}/"
 readonly HEALTHCHECK_TIMEOUT_SECONDS=30
 readonly PYTHON_MIN_MAJOR=3
 readonly PYTHON_MIN_MINOR=10
-# Верхняя «предпочтительная» минорная версия: для 3.14+ у многих пинов
-# из requirements ещё недавно не было готовых wheels, и pip пытался
-# собирать pillow/pydantic-core из исходников (падает без libjpeg/rust).
-# Предпочитаем 3.12/3.13; 3.14 допустим только если wheel'ы уже есть.
-readonly PYTHON_PREFERRED_MAX_MINOR=13
+# Верхняя поддерживаемая минорная версия. Ubuntu 26.04 (resolute) уже
+# поставляет python3=3.14 и НЕ имеет пакетов python3.12/3.13 — поэтому
+# 3.14 обязан быть first-class (requirements.txt содержит версии с cp314 wheels).
+readonly PYTHON_MAX_MINOR=14
 readonly SYSTEMD_SERVICE_NAME="mtproxy-panel"
 readonly SYSTEMD_UNIT_FILE="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}.service"
 
@@ -142,76 +141,100 @@ _python_version_of() {
 }
 
 _python_is_usable() {
-    # Принимаем 3.10 … 3.13 как предпочтительные; 3.14+ — только если
-    # вызывающий явно разрешил (после обновления deps с wheels).
+    # Поддерживаем 3.10 … 3.14 включительно (3.14 = дефолт Ubuntu 26.04 resolute).
     local bin="$1"
-    local allow_bleeding="${2:-0}"
     local version major minor
     version="$(_python_version_of "${bin}")" || return 1
     major="${version%%.*}"
     minor="${version##*.}"
-    if (( major != PYTHON_MIN_MAJOR || minor < PYTHON_MIN_MINOR )); then
+    if (( major != PYTHON_MIN_MAJOR )); then
         return 1
     fi
-    if (( minor > PYTHON_PREFERRED_MAX_MINOR )) && (( allow_bleeding == 0 )); then
+    if (( minor < PYTHON_MIN_MINOR || minor > PYTHON_MAX_MINOR )); then
         return 1
     fi
     "${bin}" -m venv --help >/dev/null 2>&1 || return 1
     return 0
 }
 
-_install_preferred_python_packages() {
-    log "Устанавливаю Python 3.12 (предпочтительная версия для панели) и зависимости сборки."
+_apt_install_available() {
+    # Ставит только те пакеты из списка, которые реально есть в apt.
+    # На Ubuntu resolute нет python3.12 — жёсткий apt-get install python3.12
+    # ронял весь install.sh из-за set -e. Здесь отсутствие пакета = skip.
+    local pkg
+    local -a available=()
+    for pkg in "$@"; do
+        if apt-cache show "${pkg}" >/dev/null 2>&1; then
+            available+=("${pkg}")
+        else
+            log "Пакет '${pkg}' недоступен в apt — пропускаю."
+        fi
+    done
+    if (( ${#available[@]} == 0 )); then
+        return 0
+    fi
+    as_root apt-get install -y "${available[@]}"
+}
+
+_ensure_python_system_packages() {
+    log "Проверяю системные пакеты Python / venv."
     as_root apt-get update -y
-    # python3.12 есть в Ubuntu 22.04/24.04; на совсем свежих релизах, где
-    # дефолт уже 3.14, пакет python3.12 обычно всё ещё доступен из архива.
-    as_root apt-get install -y \
+
+    # Базовое — всегда пробуем. Версионные python3.X — только если есть в apt
+    # (на 22.04/24.04 есть 3.12; на 26.04 resolute — только 3.14 как python3).
+    _apt_install_available \
         python3 \
         python3-pip \
         python3-venv \
-        python3.12 \
-        python3.12-venv \
+        python3.14 \
+        python3.14-venv \
         python3.13 \
         python3.13-venv \
+        python3.12 \
+        python3.12-venv \
+        python3.11 \
+        python3.11-venv \
         libjpeg-dev \
-        zlib1g-dev \
-        2>/dev/null || as_root apt-get install -y \
-            python3 python3-pip python3-venv python3.12 python3.12-venv \
-            libjpeg-dev zlib1g-dev
+        zlib1g-dev
+
+    # Если python3 есть, но без venv — пробуем версионный пакет под его minor.
+    if command -v python3 >/dev/null 2>&1; then
+        local minor
+        minor="$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
+        if [[ -n "${minor}" ]] && ! python3 -m venv --help >/dev/null 2>&1; then
+            _apt_install_available "python3.${minor}-venv" python3-venv
+        fi
+    fi
 }
 
 ensure_python() {
-    # Порядок предпочтения: явные 3.12 → 3.13 → 3.11 → любой пригодный python3.
     local candidate
-    for candidate in python3.12 python3.13 python3.11 python3; do
-        if _python_is_usable "${candidate}" 0; then
+
+    # 1) Уже есть пригодный интерпретатор — берём лучший доступный.
+    for candidate in python3.12 python3.13 python3.14 python3.11 python3; do
+        if _python_is_usable "${candidate}"; then
             PYTHON_BIN="$(command -v "${candidate}")"
             log "Использую ${PYTHON_BIN} ($(_python_version_of "${PYTHON_BIN}")) для venv."
             return
         fi
     done
 
-    log "Подходящий Python ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}–${PYTHON_MIN_MAJOR}.${PYTHON_PREFERRED_MAX_MINOR} не найден (часто на новых Ubuntu python3 = 3.14, а для него у старых зависимостей нет wheels)."
-    _install_preferred_python_packages
+    # 2) Доустанавливаем системные пакеты (без падения на отсутствующих 3.12).
+    _ensure_python_system_packages
 
-    for candidate in python3.12 python3.13 python3.11 python3; do
-        if _python_is_usable "${candidate}" 0; then
+    for candidate in python3.12 python3.13 python3.14 python3.11 python3; do
+        if _python_is_usable "${candidate}"; then
             PYTHON_BIN="$(command -v "${candidate}")"
             log "Использую ${PYTHON_BIN} ($(_python_version_of "${PYTHON_BIN}")) для venv."
             return
         fi
     done
 
-    # Последний шанс: разрешить 3.14+, если обновлённые deps уже дают wheels.
-    for candidate in python3 python3.14; do
-        if _python_is_usable "${candidate}" 1; then
-            PYTHON_BIN="$(command -v "${candidate}")"
-            log "ВНИМАНИЕ: использую ${PYTHON_BIN} ($(_python_version_of "${PYTHON_BIN}")) — это новее предпочтительного диапазона. Если pip снова упадёт на сборке wheels, установите python3.12 вручную."
-            return
-        fi
-    done
-
-    fail "Не удалось найти/установить пригодный Python (>= ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}). Установите вручную: apt install python3.12 python3.12-venv && bash install.sh"
+    local have_ver=""
+    if command -v python3 >/dev/null 2>&1; then
+        have_ver="$(_python_version_of python3 || echo '?')"
+    fi
+    fail "Не удалось найти пригодный Python ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}–${PYTHON_MIN_MAJOR}.${PYTHON_MAX_MINOR} с модулем venv (сейчас python3=${have_ver:-нет}). Установите: apt install -y python3 python3-venv && bash install.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -275,27 +298,19 @@ ensure_project_structure() {
 # ---------------------------------------------------------------------------
 ensure_venv() {
     local recreate=0
-    local venv_version
+    local venv_version=""
+    local wanted_version
+
+    wanted_version="$(_python_version_of "${PYTHON_BIN}")"
 
     if [[ -d "${VENV_DIR}" && -x "${VENV_DIR}/bin/python" ]]; then
         venv_version="$(_python_version_of "${VENV_DIR}/bin/python" || echo "")"
-        local wanted_version
-        wanted_version="$(_python_version_of "${PYTHON_BIN}")"
         if [[ -z "${venv_version}" || "${venv_version}" != "${wanted_version}" ]]; then
             log "Существующий venv на Python ${venv_version:-?} не совпадает с ${PYTHON_BIN} (${wanted_version}) — пересоздаю."
             recreate=1
-        else
-            # Старый venv мог быть создан на 3.14 и остаться полусломанным
-            # после падения pip: пересоздаём, если мажор/минор > предпочтительного.
-            local major="${venv_version%%.*}"
-            local minor="${venv_version##*.}"
-            if (( major == PYTHON_MIN_MAJOR && minor > PYTHON_PREFERRED_MAX_MINOR )); then
-                # Разрешаем оставить 3.14-venv только если зависимости уже стоят.
-                if ! "${VENV_DIR}/bin/python" -c "import fastapi, pydantic, PIL, docker" >/dev/null 2>&1; then
-                    log "Venv на Python ${venv_version} без установленных зависимостей — пересоздаю."
-                    recreate=1
-                fi
-            fi
+        elif ! "${VENV_DIR}/bin/python" -c "import fastapi, pydantic, PIL, docker" >/dev/null 2>&1; then
+            log "Venv на Python ${venv_version} без рабочих зависимостей — пересоздаю."
+            recreate=1
         fi
     else
         recreate=1
@@ -306,17 +321,23 @@ ensure_venv() {
             log "Удаляю старое виртуальное окружение."
             rm -rf "${VENV_DIR}"
         fi
-        log "Создаю виртуальное окружение через ${PYTHON_BIN}."
+        log "Создаю виртуальное окружение через ${PYTHON_BIN} (${wanted_version})."
         "${PYTHON_BIN}" -m venv "${VENV_DIR}"
     else
         log "Виртуальное окружение уже существует (Python ${venv_version})."
     fi
 
-    log "Устанавливаю зависимости из requirements.txt."
+    log "Устанавливаю зависимости из requirements.txt (готовые wheels для native-пакетов)."
     "${VENV_DIR}/bin/pip" install --upgrade pip --quiet
-    if ! "${VENV_DIR}/bin/pip" install -r "${SCRIPT_DIR}/requirements.txt"; then
-        fail "Не удалось установить Python-зависимости. Частая причина — слишком новый Python без готовых wheels. Установите python3.12 и повторите: apt install -y python3.12 python3.12-venv && rm -rf venv && bash install.sh"
+    # Для native-пакетов запрещаем сборку из исходников: на 3.14 отсутствие
+    # wheel раньше превращалось в 200 строк ошибок компиляции jpeg/rust.
+    if ! "${VENV_DIR}/bin/pip" install \
+            --only-binary=pillow,pydantic-core,cryptography \
+            -r "${SCRIPT_DIR}/requirements.txt"; then
+        fail "Не удалось установить Python-зависимости для Python ${wanted_version}. Обновите ветку/requirements.txt, затем: rm -rf venv && bash install.sh"
     fi
+
+    "${VENV_DIR}/bin/python" -c "import fastapi, pydantic, PIL, docker, qrcode, cryptography; print('deps OK')"
 }
 
 # ---------------------------------------------------------------------------
