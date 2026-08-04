@@ -1,204 +1,210 @@
 """
-Docker-слой для WireGuard VPN сервера.
+Native WireGuard: wireguard-tools + systemd wg-quick@wg0.
 
-В отличие от MTProxy (где каждый прокси — отдельный контейнер), WireGuard
-работает как ОДИН постоянный контейнер-сервер, обслуживающий множество
-peer-ов через один и тот же UDP-порт. Peer-ы добавляются/удаляются
-"горячо" через `wg syncconf` — без перезапуска контейнера и без разрыва
-соединений остальных клиентов.
-
-Образ: lscr.io/linuxserver/wireguard БЕЗ переменной окружения PEERS —
-это официально документированный "bare/client mode": образ НЕ генерирует
-peer-конфиги самостоятельно, а просто поднимает интерфейс из готового
-wg_confs/wg0.conf, который полностью формирует и обновляет наша панель.
-(Важно: даже PEERS=0 — это НЕ то же самое, что отсутствие переменной —
-см. подробный комментарий в ensure_server_running() ниже.)
+Конфиг: /etc/wireguard/wg0.conf
+NAT/firewall: nftables (firewall_manager)
+Горячее обновление peer-ов: wg syncconf
 """
 from __future__ import annotations
 
 import logging
 import time
-
-import docker
-from docker.errors import APIError, NotFound
-from docker.models.containers import Container
+from pathlib import Path
 
 import config
+import host_exec
+from firewall_manager import FirewallError, FirewallManager
 
 logger = logging.getLogger(__name__)
 
 
-class WireGuardDockerError(RuntimeError):
-    """Ошибка при работе с Docker-контейнером WireGuard-сервера."""
+class WireGuardError(RuntimeError):
+    """Ошибка native WireGuard-сервера."""
+
+
+# Обратная совместимость имён (старые catch в коде/логах).
+WireGuardDockerError = WireGuardError
 
 
 class WireGuardManager:
-    """Управляет жизненным циклом единственного контейнера WireGuard-сервера."""
+    """Управляет native WireGuard через wg-quick systemd unit."""
 
     def __init__(self) -> None:
         try:
-            self._client = docker.from_env()
-            self._client.ping()
-        except Exception as exc:
-            raise WireGuardDockerError(
-                "Docker daemon недоступен для управления WireGuard-сервером"
-            ) from exc
-
-    def _get_container(self) -> Container | None:
-        try:
-            return self._client.containers.get(config.WG_CONTAINER_NAME)
-        except NotFound:
-            return None
+            host_exec.require_binaries("wg", "wg-quick", "systemctl", "nft")
+            self._firewall = FirewallManager()
+        except (host_exec.HostExecError, FirewallError) as exc:
+            raise WireGuardError(str(exc)) from exc
+        self._unit = config.WG_SYSTEMD_UNIT
 
     def is_running(self) -> bool:
-        container = self._get_container()
-        if container is None:
-            return False
-        container.reload()
-        return container.status == "running"
+        return self.get_status() == "running"
 
     def get_status(self) -> str:
-        container = self._get_container()
-        if container is None:
+        conf = Path(config.WG_SYSTEM_CONF_PATH)
+        if not conf.exists() and not self._unit_exists():
             return "missing"
-        container.reload()
-        return container.status
+        result = host_exec.systemctl("is-active", self._unit, check=False)
+        state = (result.stdout or result.stderr).strip()
+        if state == "active":
+            return "running"
+        if state in {"failed"}:
+            return "failed"
+        if state in {"inactive", "dead"}:
+            return "stopped"
+        return state or "stopped"
 
-    def ensure_server_running(self, listen_port: int) -> None:
-        """
-        Создаёт (если не существует) и запускает контейнер WireGuard-сервера.
-        Идемпотентно: если контейнер уже существует и работает — ничего не делает.
-        Конфигурация (wg0.conf) читается контейнером из смонтированной директории
-        config.WG_CONFIG_DIR/wg_confs/wg0.conf, которую формирует панель.
-        """
-        container = self._get_container()
-        if container is not None:
-            container.reload()
-            if container.status == "running":
+    def _unit_exists(self) -> bool:
+        result = host_exec.systemctl("cat", self._unit, check=False)
+        return result.ok
+
+    def write_config(self, conf_text: str) -> None:
+        host_exec.write_root_file(config.WG_SYSTEM_CONF_PATH, conf_text, mode=0o600)
+        # Зеркало в data/ для бэкапа/диагностики (не источник истины для wg-quick).
+        mirror_dir = config.WG_CONFIG_DIR / "wg_confs"
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        (mirror_dir / f"{config.WG_INTERFACE_NAME}.conf").write_text(conf_text, encoding="utf-8")
+
+    def ensure_server_running(
+        self,
+        *,
+        conf_text: str,
+        listen_port: int,
+        subnet: str,
+        xray_port: int | None = None,
+    ) -> None:
+        """Пишет конфиг, поднимает wg-quick@wg0, применяет nftables NAT."""
+        self.write_config(conf_text)
+        try:
+            self._firewall.ensure_ip_forward()
+            self._firewall.ensure(
+                wg_port=listen_port,
+                xray_port=xray_port,
+                wg_subnet=subnet if "/" in subnet else f"{subnet}/24",
+            )
+        except FirewallError as exc:
+            raise WireGuardError(str(exc)) from exc
+
+        try:
+            host_exec.systemctl("enable", self._unit)
+            # restart безопаснее start: подхватывает новый ListenPort/Address.
+            host_exec.systemctl("restart", self._unit)
+        except host_exec.HostExecError as exc:
+            logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
+            raise WireGuardError(
+                f"Не удалось запустить {self._unit}: {exc}\n{logs}"
+            ) from exc
+
+        self.wait_until_interface_ready()
+
+    def wait_until_interface_ready(self, timeout: float | None = None) -> None:
+        if timeout is None:
+            timeout = config.WG_INTERFACE_TIMEOUT_SECONDS
+        deadline = time.monotonic() + timeout
+        last = ""
+        while time.monotonic() < deadline:
+            if self.get_status() == "failed":
+                logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
+                raise WireGuardError(f"{self._unit} в состоянии failed:\n{logs}")
+            result = host_exec.run(
+                ["wg", "show", config.WG_INTERFACE_NAME],
+                check=False,
+            )
+            if result.ok:
                 return
-            logger.info("Контейнер WireGuard существует, но не запущен — запускаю")
-            try:
-                container.start()
-            except APIError as exc:
-                raise WireGuardDockerError(f"Не удалось запустить контейнер WireGuard: {exc}") from exc
-            self._wait_running(container)
+            last = result.output
+            time.sleep(0.5)
+        raise WireGuardError(
+            f"Интерфейс {config.WG_INTERFACE_NAME} не поднялся за {timeout:.0f}с. "
+            f"wg: {last or '(пусто)'}"
+        )
+
+    def reload_config(self, *, conf_text: str, listen_port: int, subnet: str) -> None:
+        """Горячее применение peer-ов через wg syncconf + обновление nftables."""
+        self.write_config(conf_text)
+        try:
+            self._firewall.ensure_ip_forward()
+            self._firewall.ensure(
+                wg_port=listen_port,
+                wg_subnet=subnet if "/" in subnet else f"{subnet}/24",
+            )
+        except FirewallError as exc:
+            raise WireGuardError(str(exc)) from exc
+
+        if not self.is_running():
+            self.ensure_server_running(
+                conf_text=conf_text, listen_port=listen_port, subnet=subnet,
+            )
             return
 
-        logger.info("Создаю контейнер WireGuard-сервера на порту %d/udp", listen_port)
-        try:
-            container = self._client.containers.run(
-                config.WG_DOCKER_IMAGE,
-                name=config.WG_CONTAINER_NAME,
-                detach=True,
-                restart_policy={"Name": "unless-stopped"},
-                cap_add=["NET_ADMIN", "SYS_MODULE"],
-                sysctls={
-                    "net.ipv4.conf.all.src_valid_mark": "1",
-                    "net.ipv4.ip_forward": "1",
-                },
-                ports={f"{listen_port}/udp": listen_port},
-                # ВАЖНО: PEERS не задаём вовсе (а не "0"!). У linuxserver/wireguard
-                # ЛЮБОЕ непустое значение PEERS (включая "0") включает "серверный"
-                # режим — образ САМ генерирует новый wg0.conf (со своим случайным
-                # приватным ключом и служебной подсетью 10.13.13.0/24!), полностью
-                # затирая наш файл ДО первого 'wg-quick up'. Из-за этого реальный
-                # запущенный интерфейс не совпадал ни по ключу, ни по подсети с тем,
-                # что панель хранит в БД и отдаёт клиентам — туннель не мог поднять
-                # соединение и/или не мог маршрутизировать трафик пиров (не было
-                # маршрута до подсети пиров в таблице маршрутизации контейнера).
-                # Официально документированный "bare/client mode" — не задавать
-                # PEERS вообще и просто положить готовый конфиг в wg_confs/*.conf.
-                environment={"PUID": "0", "PGID": "0"},
-                volumes={str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"}},
-            )
-        except APIError as exc:
-            raise WireGuardDockerError(f"Не удалось создать контейнер WireGuard: {exc}") from exc
-
-        self._wait_running(container)
-
-    def _wait_running(self, container: Container) -> None:
-        deadline = time.monotonic() + config.DOCKER_WG_START_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            container.reload()
-            if container.status == "running":
-                return
-            if container.status in {"exited", "dead"}:
-                raise WireGuardDockerError(
-                    f"Контейнер WireGuard завершился со статусом '{container.status}' при запуске"
-                )
-            time.sleep(0.5)
-        raise WireGuardDockerError("Контейнер WireGuard не перешёл в статус 'running' за отведённое время")
-
-    def reload_config(self) -> None:
-        """
-        Применяет обновлённый wg0.conf "на горячую" через `wg syncconf`,
-        не разрывая существующие соединения других peer-ов.
-        """
-        container = self._get_container()
-        if container is None:
-            raise WireGuardDockerError("Контейнер WireGuard не найден — сервер ещё не настроен")
-
-        exit_code, output = container.exec_run(
-            [
-                "bash", "-c",
-                f"wg syncconf {config.WG_INTERFACE_NAME} "
-                f"<(wg-quick strip /config/wg_confs/{config.WG_INTERFACE_NAME}.conf)",
-            ],
+        strip = host_exec.run(
+            ["wg-quick", "strip", config.WG_SYSTEM_CONF_PATH],
+            check=True,
         )
-        if exit_code != 0:
-            raise WireGuardDockerError(
-                f"wg syncconf завершился с ошибкой (код {exit_code}): {output.decode('utf-8', 'replace')}"
+        try:
+            host_exec.run(
+                ["wg", "syncconf", config.WG_INTERFACE_NAME, "/dev/stdin"],
+                input_text=strip.stdout,
             )
-        logger.info("Конфигурация WireGuard применена на горячую (wg syncconf)")
+        except host_exec.HostExecError as exc:
+            logger.warning("wg syncconf не удался (%s) — полный restart", exc)
+            host_exec.systemctl("restart", self._unit)
+            self.wait_until_interface_ready()
+        logger.info("Конфигурация WireGuard применена (wg syncconf)")
 
     def get_peer_last_handshakes(self) -> dict[str, int]:
-        """
-        Возвращает {public_key: unix_timestamp последнего handshake}. WireGuard
-        не пишет лог о каждом подключении (это не TCP-прокси, а UDP-туннель без
-        событийного протокола) — время последнего handshake — самый прямой
-        показатель "жив ли клиент" ("0" из вывода wg означает "ни разу").
-        """
-        container = self._get_container()
-        if container is None:
+        result = host_exec.run(
+            ["wg", "show", config.WG_INTERFACE_NAME, "latest-handshakes"],
+            check=False,
+        )
+        if not result.ok:
             return {}
-        try:
-            exit_code, output = container.exec_run(
-                ["wg", "show", config.WG_INTERFACE_NAME, "latest-handshakes"]
-            )
-        except APIError:
-            return {}
-        if exit_code != 0:
-            return {}
-
-        result: dict[str, int] = {}
-        for line in output.decode("utf-8", "replace").splitlines():
+        out: dict[str, int] = {}
+        for line in result.stdout.splitlines():
             parts = line.split()
             if len(parts) != 2:
                 continue
-            public_key, timestamp = parts
             try:
-                result[public_key] = int(timestamp)
+                out[parts[0]] = int(parts[1])
             except ValueError:
                 continue
-        return result
+        return out
+
+    def get_peer_transfer_stats(self) -> dict[str, tuple[int, int]]:
+        result = host_exec.run(
+            ["wg", "show", config.WG_INTERFACE_NAME, "transfer"],
+            check=False,
+        )
+        if not result.ok:
+            return {}
+        out: dict[str, tuple[int, int]] = {}
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 3:
+                continue
+            try:
+                out[parts[0]] = (int(parts[1]), int(parts[2]))
+            except ValueError:
+                continue
+        return out
 
     def restart_server(self) -> None:
-        """Перезапускает контейнер WireGuard-сервера, не трогая конфигурацию/peer-ов."""
-        container = self._get_container()
-        if container is None:
-            raise WireGuardDockerError("Контейнер WireGuard не найден — сервер ещё не настроен")
         try:
-            container.restart(timeout=10)
-        except APIError as exc:
-            raise WireGuardDockerError(f"Не удалось перезапустить контейнер WireGuard: {exc}") from exc
-        self._wait_running(container)
+            host_exec.systemctl("restart", self._unit)
+        except host_exec.HostExecError as exc:
+            raise WireGuardError(f"Не удалось перезапустить WireGuard: {exc}") from exc
+        self.wait_until_interface_ready()
 
     def remove_server(self) -> None:
-        """Полностью удаляет контейнер WireGuard-сервера (для полного сброса VPN)."""
-        container = self._get_container()
-        if container is None:
-            return
+        host_exec.systemctl("disable", "--now", self._unit, check=False)
+        # На случай если unit не остановил интерфейс.
+        host_exec.run(
+            ["wg-quick", "down", config.WG_SYSTEM_CONF_PATH],
+            check=False,
+        )
+        host_exec.remove_root_file(config.WG_SYSTEM_CONF_PATH)
         try:
-            container.remove(force=True)
-        except APIError as exc:
-            raise WireGuardDockerError(f"Не удалось удалить контейнер WireGuard: {exc}") from exc
+            self._firewall.clear_wireguard()
+            self._firewall.ensure(wg_port=None, xray_port=None, wg_subnet=None)
+        except FirewallError as exc:
+            logger.warning("Не удалось обновить nftables после сброса WG: %s", exc)

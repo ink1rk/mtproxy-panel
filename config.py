@@ -132,19 +132,21 @@ EXPECTED_ADMIN_USERS_COLUMNS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# WireGuard VPN
+# WireGuard VPN (native: wireguard-tools + systemd wg-quick)
 # ---------------------------------------------------------------------------
 WG_CONFIG_DIR: Path = DATA_DIR / "wireguard"
 WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-WG_DOCKER_IMAGE: str = "lscr.io/linuxserver/wireguard:latest"
-WG_CONTAINER_NAME: str = "wg_server"
 WG_INTERFACE_NAME: str = "wg0"
+WG_SYSTEM_CONF_PATH: str = f"/etc/wireguard/{WG_INTERFACE_NAME}.conf"
+WG_SYSTEMD_UNIT: str = f"wg-quick@{WG_INTERFACE_NAME}.service"
 WG_DEFAULT_PORT: int = 51820
 WG_DEFAULT_SUBNET: str = "10.66.0.0/24"
 WG_DEFAULT_DNS: str = "1.1.1.1"
 WG_KEEPALIVE_SECONDS: int = 25
-DOCKER_WG_START_TIMEOUT_SECONDS: float = 20.0
+# 1280 — безопасный MTU для мобильных сетей/CGNAT.
+WG_CLIENT_MTU: int = 1280
+WG_INTERFACE_TIMEOUT_SECONDS: float = 30.0
 
 WG_SERVER_CONFIG_TABLE_NAME: str = "wg_server_config"
 EXPECTED_WG_SERVER_CONFIG_COLUMNS: dict[str, str] = {
@@ -171,37 +173,43 @@ EXPECTED_WG_PEERS_COLUMNS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Xray / VLESS+REALITY VPN
+# Xray / VLESS+REALITY VPN (native binary + systemd)
 # ---------------------------------------------------------------------------
 XRAY_CONFIG_DIR: Path = DATA_DIR / "xray"
 XRAY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-XRAY_DOCKER_IMAGE: str = "teddysun/xray:latest"
-XRAY_CONTAINER_NAME: str = "xray_server"
+XRAY_BINARY_PATH: str = "/usr/local/bin/xray"
+XRAY_SYSTEM_CONF_PATH: str = "/usr/local/etc/xray/config.json"
+XRAY_SYSTEMD_UNIT: str = "xray.service"
+XRAY_SYSTEMD_UNIT_PATH: str = "/etc/systemd/system/xray.service"
 XRAY_DEFAULT_PORT: int = 8443
-# ВАЖНО: dest/serverName должны указывать на реальный сайт с TLS-сертификатом,
-# чей TLS Certificate record укладывается в жёсткий лимит Xray-core (8192 байта,
-# https://github.com/XTLS/Xray-core/issues/6356). www.microsoft.com ранее стоял
-# тут по умолчанию, но у него из-за OCSP-stapling запись сертификата ~8273 байта —
-# REALITY-хендшейк со ЛЮБЫМ клиентом гарантированно проваливался с ошибкой
-# "processed invalid connection ... handshake did not complete successfully",
-# независимо от корректности ключей/UUID/shortId. Проверено end-to-end реальным
-# VLESS-клиентом: с www.cloudflare.com (маленький сертификат) туннель поднимается
-# и передаёт трафик; с www.microsoft.com — нет, ни разу. Если меняете dest на
-# что-то своё — выбирайте популярный сайт с TLS 1.3 и небольшим сертификатом
-# (без длинных цепочек/OCSP-stapling), иначе получите ту же ошибку.
+# ВАЖНО: dest/serverName — сайт с небольшим TLS-сертификатом (<8192 байт
+# Certificate record). www.cloudflare.com проверен; www.microsoft.com — нет.
 XRAY_DEFAULT_DEST: str = "www.cloudflare.com:443"
 XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
-# Пусто = "no flow" (обычный REALITY без XTLS Vision). Есть подтверждённые
-# случаи, когда именно паттерн трафика xtls-rprx-vision (не REALITY в целом)
-# избирательно блокируется DPI в некоторых регионах, хотя обычный TLS-трафик
-# проходит нормально (см. github.com/XTLS/Xray-core/issues/1615). Vision даёт
-# прирост производительности за счёт Linux splice(), но в приоритете сначала
-# факт работоспособности, а не скорость — поэтому по умолчанию выключен.
-# Включить обратно: XRAY_FLOW = "xtls-rprx-vision".
-XRAY_FLOW: str = ""
-DOCKER_XRAY_START_TIMEOUT_SECONDS: float = 20.0
+# Официальный режим VLESS+REALITY + Vision.
+XRAY_FLOW: str = "xtls-rprx-vision"
+# Xray-core >= 26.7.11 при пустом minClientVer подставляет 26.3.27 и режет
+# обычные мобильные клиенты (TLS «ок», прокси-байт 0). Явно держим низкий порог.
+XRAY_MIN_CLIENT_VER: str = "1.0.0"
+XRAY_START_TIMEOUT_SECONDS: float = 20.0
 XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
+
+# ---------------------------------------------------------------------------
+# Host firewall / sysctl (nftables)
+# ---------------------------------------------------------------------------
+NFT_TABLE_NAME: str = "mtproxy-panel"
+NFT_RULES_PATH: str = "/etc/nftables.d/mtproxy-panel.nft"
+SYSCTL_FORWARD_PATH: str = "/etc/sysctl.d/99-mtproxy-panel-forward.conf"
+
+# Ротация docker-логов только для MTProxy-контейнеров.
+DOCKER_LOG_CONFIG: dict = {
+    "type": "json-file",
+    "config": {
+        "max-size": "10m",
+        "max-file": "1",
+    },
+}
 
 XRAY_SERVER_CONFIG_TABLE_NAME: str = "xray_server_config"
 EXPECTED_XRAY_SERVER_CONFIG_COLUMNS: dict[str, str] = {

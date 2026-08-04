@@ -1,10 +1,8 @@
 """
-Генерация текстовых конфигов WireGuard: серверного wg0.conf (со всеми
-peer-ами) и клиентских .conf файлов (по одному на peer, для скачивания
-и QR-кода).
+Генерация текстовых конфигов WireGuard: серверного wg0.conf и клиентских .conf.
 
-Чистые функции без побочных эффектов — не трогают диск и Docker,
-поэтому полностью тестируются без реального контейнера.
+Чистые функции без побочных эффектов. NAT/firewall применяет FirewallManager
+(nftables) отдельно — PostUp в конфиге не используется (избегаем гонок с nft).
 """
 from __future__ import annotations
 
@@ -15,7 +13,7 @@ import config
 
 @dataclass(frozen=True, slots=True)
 class PeerForConfig:
-    """Минимальный набор полей peer-а, нужный для рендера серверного конфига."""
+    """Минимальный набор полей peer-а для рендера серверного конфига."""
 
     name: str
     public_key: str
@@ -23,7 +21,7 @@ class PeerForConfig:
 
 
 def _subnet_base_and_prefix(subnet: str) -> tuple[str, str]:
-    """Разбирает '10.66.0.0/24' -> ('10.66.0', '24'). Дефолт префикса — '24'."""
+    """Разбирает '10.66.0.0/24' -> ('10.66.0', '24')."""
     network_part, _, prefix = subnet.partition("/")
     octets = network_part.split(".")
     if len(octets) != 4:
@@ -32,17 +30,7 @@ def _subnet_base_and_prefix(subnet: str) -> tuple[str, str]:
 
 
 def server_tunnel_address(subnet: str) -> str:
-    """
-    Адрес самого сервера в туннеле — всегда '.1' указанной подсети.
-    ВАЖНО: ранее здесь был захардкожен config.WG_SERVER_TUNNEL_IP ('10.66.0.1')
-    независимо от подсети, которую вводит администратор при настройке — если
-    он указывал любую другую подсеть, сервер поднимался с адресом ИЗ ЧУЖОЙ
-    подсети, а выделяемые пирам IP (allocate_next_ip, ниже) были из подсети,
-    которую он реально ввёл. Peer никогда не мог достучаться до сервера,
-    потому что на кону разные /24-сети — тот же класс проблем, что и с
-    "чужим" ключом при баге PEERS=0 (см. историю коммитов), просто в другом
-    месте. Теперь адрес сервера всегда согласован с фактической подсетью.
-    """
+    """Адрес сервера в туннеле — всегда '.1' указанной подсети."""
     base, _ = _subnet_base_and_prefix(subnet)
     return f"{base}.1"
 
@@ -55,15 +43,10 @@ def render_server_config(
     peers: list[PeerForConfig],
 ) -> str:
     """
-    Строит содержимое server-side wg0.conf: один [Interface] и по одному
-    [Peer] блоку на каждого зарегистрированного клиента.
+    Серверный /etc/wireguard/wg0.conf для native wg-quick@.
 
-    PostUp/PostDown добавляют NAT (MASQUERADE) для трафика из туннеля наружу
-    через eth0 — единственный сетевой интерфейс контейнера в стандартной
-    bridge-сети Docker. Без этого клиенты подключились бы к VPN, но не
-    получили бы доступ в интернет через туннель (стандартный паттерн для
-    WireGuard-сервера в Docker, подтверждённый несколькими независимыми
-    источниками, включая официальный блог LinuxServer.io).
+    NAT делает nftables (firewall_manager), не PostUp — так правила
+    переживают reload и не конфликтуют с Docker/iptables-nft.
     """
     _, prefix = _subnet_base_and_prefix(subnet)
     lines = [
@@ -71,10 +54,7 @@ def render_server_config(
         f"PrivateKey = {server_private_key}",
         f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
-        "PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; "
-        "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE",
-        "PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; "
-        "iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE",
+        f"MTU = {config.WG_CLIENT_MTU}",
         "",
     ]
     for peer in peers:
@@ -99,13 +79,14 @@ def render_client_config(
     server_listen_port: int,
     dns: str,
 ) -> str:
-    """Строит содержимое клиентского .conf файла для конкретного peer-а."""
+    """Клиентский .conf для телефона/десктопа."""
     return "\n".join(
         [
             "[Interface]",
             f"PrivateKey = {client_private_key}",
             f"Address = {client_allocated_ip}/32",
             f"DNS = {dns}",
+            f"MTU = {config.WG_CLIENT_MTU}",
             "",
             "[Peer]",
             f"PublicKey = {server_public_key}",
@@ -118,17 +99,14 @@ def render_client_config(
 
 
 def allocate_next_ip(subnet: str, used_ips: set[str]) -> str:
-    """
-    Находит следующий свободный IP в подсети (кроме .0/сеть, .1/сервер
-    и .255/broadcast для /24). Подсеть должна быть вида '10.66.0.0/24'.
-    """
+    """Следующий свободный IP в подсети (.1 — сервер, .0/.255 — служебные)."""
     network_part = subnet.split("/")[0]
     octets = network_part.split(".")
     if len(octets) != 4:
         raise ValueError(f"Некорректная подсеть: {subnet!r}")
     base = ".".join(octets[:3])
 
-    for host_octet in range(2, 255):  # .1 зарезервирован под сервер
+    for host_octet in range(2, 255):
         candidate = f"{base}.{host_octet}"
         if candidate not in used_ips:
             return candidate

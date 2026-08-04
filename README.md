@@ -1,201 +1,123 @@
 # MTProxy + WireGuard + VLESS Control Panel
 
-Единая веб-панель управления Telegram MTProxy, WireGuard VPN и Xray
-(VLESS + REALITY) на FastAPI + Docker SDK. Всё — из одного браузера,
-без ручного редактирования конфигов и без docker-compose.
+Production self-hosted VPN management panel on FastAPI.
+
+| Сервис | Runtime | Управление |
+|--------|---------|------------|
+| **WireGuard** | native `wireguard-tools` | systemd `wg-quick@wg0`, конфиг `/etc/wireguard/wg0.conf` |
+| **VLESS + REALITY** | native Xray binary | systemd `xray.service`, `/usr/local/etc/xray/config.json` |
+| **MTProxy** | Docker | один контейнер на прокси |
+| **Firewall / NAT** | nftables | таблица `inet mtproxy-panel` |
+
+UI и FastAPI API сохранены; Docker для WireGuard/Xray **удалён** (bridge NAT
+давал handshake 1–3 KiB без интернета).
 
 ## Возможности
 
 ### Прокси (MTProxy)
-- Аутентификация по логину/паролю
-- Создание MTProxy кнопкой (официальный образ `telegrammessenger/proxy`)
-- Выбор порта: случайный свободный или указанный вручную
-- Режимы обфускации secret: `classic` / `dd` (anti-DPI) / `ee` (fake-TLS под домен)
-- Список прокси: статус, IP:порт, secret, tg:// и https:// ссылки, QR
-- Полный откат при любой ошибке создания — "полуготовых" прокси не остаётся
+- Создание кнопкой (образ `telegrammessenger/proxy`)
+- Secret: `classic` / `dd` / `ee` (fake-TLS)
+- Ссылки tg:// / https:// и QR
 
 ### WireGuard VPN
-- Настраивается один раз (порт, подсеть, DNS) — сервер поднимается автоматически
-- Добавление клиента = **только имя устройства**. Приватный/публичный ключ,
-  IP из подсети, готовый `.conf`-файл и QR-код генерируются панелью сама
-- Клиенты применяются "на горячую" (`wg syncconf`) — без разрыва соединений
-  остальных пользователей и без перезапуска сервера
-- Готовые NAT-правила (PostUp/PostDown) добавляются автоматически — клиенты
-  сразу получают доступ в интернет через туннель, не только к самому серверу
-- Скачивание `.conf` в один клик, QR для мобильных клиентов
+- Native `wg-quick@wg0` + автоматический nftables MASQUERADE
+- Клиент = только имя → ключи, IP, `.conf`, QR
+- Горячее применение peer-ов через `wg syncconf`
+- После setup: health-check (service / port / routing / egress)
 
-### VLESS (Xray + REALITY)
-- Настраивается один раз (порт, домен для маскировки) — REALITY-ключи
-  генерируются автоматически
-- Добавление клиента = **только имя**. UUID и готовая `vless://` ссылка
-  (совместима с v2rayNG, NekoBox, Shadowrocket и т.д.) генерируются сами
-- Формат VLESS + REALITY + Vision — современный протокол, устойчивый
-  к активному DPI-зондированию (сервер маскируется под реальный HTTPS-сайт)
+### VLESS (Xray + REALITY + Vision)
+- Native Xray + systemd
+- Клиент = имя → UUID, `vless://`, QR
+- `minClientVer=1.0.0` (совместимость с мобильными клиентами)
+- После setup: те же health-check'и
 
 ### Логи
-- Встроенный веб-просмотрщик `/logs` — не нужно заходить по SSH
-- Фильтрация по уровню (INFO/WARNING/ERROR/CRITICAL) и полнотекстовый поиск
-- Автообновление каждые 5 секунд
-
-## Стек
-
-Python 3.12, FastAPI, Jinja2, SQLite, Docker SDK, Bootstrap 5, qrcode,
-Pillow, uvicorn, cryptography (для ключей WireGuard/REALITY). Никакого
-docker-compose, systemd, nginx или ssl-терминации — только чистый Docker SDK.
+- `/logs` — app.log + journalctl (WG/Xray) + Docker MTProxy
 
 ## Архитектура
 
 ```
-main.py               # точка входа FastAPI, логирование, автозапуск VPN-серверов
-routes.py              # HTTP-роуты MTProxy
-vpn_routes.py           # HTTP-роуты WireGuard и VLESS
-log_routes.py           # HTTP-роуты веб-просмотрщика логов
-service.py              # бизнес-логика MTProxy
-vpn_service.py           # бизнес-логика WireGuard/VLESS (setup, add/delete, rollback)
-mtproxy.py               # оркестрация Docker-контейнеров MTProxy
-wireguard_manager.py      # Docker-слой WireGuard-сервера (создание, hot-reload)
-xray_manager.py           # Docker-слой Xray-сервера (создание, apply config)
-wireguard_config.py        # рендер wg0.conf (сервер + клиенты), выделение IP
-xray_config.py              # рендер config.json (VLESS+REALITY), vless:// ссылки
-crypto_utils.py               # генерация ключей WireGuard/REALITY (без внешних CLI)
-docker_manager.py               # обёртка Docker SDK для MTProxy
-repository.py / vpn_repository.py  # Repository Pattern поверх SQLite
-auth.py                            # аутентификация, хеширование паролей, сессии
-database.py                        # реестр таблиц, создание, авто-миграция схемы
-models.py                          # доменные модели
-schemas.py                         # Pydantic v2 схемы
-utils.py                           # порты, MTProxy-secret, QR, публичный IP
-config.py                          # все настройки в одном месте
-templates/                         # index / wireguard / vless / logs / login
-static/qr/                         # сгенерированные QR-коды
-logs/                              # логи с ротацией
+main.py                 # FastAPI + автозапуск native VPN
+vpn_service.py          # оркестрация WG/Xray + health
+wireguard_manager.py    # wg-quick / wg syncconf / systemd
+xray_manager.py         # xray binary + systemd
+firewall_manager.py     # nftables NAT + ports
+vpn_health.py           # обязательные проверки после setup
+host_exec.py            # привилегированные host-команды
+mtproxy.py              # Docker MTProxy (без изменений по смыслу)
+docker_manager.py       # Docker SDK только для MTProxy
+install.sh              # python + docker(MTProxy) + wireguard + xray + nftables
 ```
 
-## Порты, которые использует система
+## Порты
 
-| Сервис             | Протокол | По умолчанию          | Настраивается            |
-|---------------------|----------|------------------------|---------------------------|
-| Веб-панель          | TCP      | 8000                    | `config.py` → `APP_PORT` |
-| MTProxy (на инстанс)| TCP      | случайный или вручную   | при создании прокси       |
-| WireGuard           | UDP      | 51820                   | при настройке раздела     |
-| VLESS + REALITY     | TCP      | 8443                    | при настройке раздела     |
+| Сервис        | Протокол | По умолчанию |
+|---------------|----------|--------------|
+| Панель        | TCP      | 8000         |
+| WireGuard     | UDP      | 51820        |
+| VLESS         | TCP      | 8443         |
+| MTProxy       | TCP      | случайный    |
 
-Панель сама проверяет свободность порта перед созданием (реальным
-`socket.bind()`), поэтому конфликтов между MTProxy/WireGuard/VLESS не
-возникает, даже если запрошен один и тот же номер порта.
+В **облачном firewall** (Timeweb / Hetzner / …) откройте `51820/udp`,
+`8443/tcp`, `8000/tcp` и порты MTProxy.
 
-**Про firewall:** порты, которые публикует Docker (`-p`) — это MTProxy,
-WireGuard, VLESS — обычно доступны из интернета даже при активном `ufw`,
-так как Docker управляет своими iptables-правилами независимо от него.
-`install.sh` дополнительно открывает через `ufw` только порт самой панели
-(8000/tcp), если `ufw` активен.
-
-## Установка на Ubuntu Server
+## Установка
 
 ```bash
-git clone <URL_ТВОЕГО_РЕПОЗИТОРИЯ>.git
+git clone https://github.com/ink1rk/mtproxy-panel.git
 cd mtproxy-panel
 bash install.sh
 ```
 
-Скрипт автоматически:
+`install.sh` делает чистую установку:
 
-1. установит Python 3 (и модуль `venv`/`pip`, даже если Python уже был) и Docker, если их нет;
-2. проверит поддержку WireGuard ядром (best-effort, не фатально);
-3. откроет порт панели в `ufw`, если он активен;
-4. создаст `venv`, поставит зависимости, создаст структуру каталогов и SQLite-базу;
-5. запустит FastAPI как systemd-сервис `mtproxy-panel` (автозапуск при загрузке сервера,
-   автоперезапуск при сбое); если systemd недоступен (например, минимальный контейнер) —
-   запустит в фоне через `nohup ... &`, но тогда панель не переживёт перезагрузку сервера;
-6. подождёт запуск и проверит `curl -L http://127.0.0.1:8000/` -> HTTP 200 + HTML
-   (панель теперь требует логин, поэтому проверка идёт с учётом редиректа на `/login`),
-   а также убедится, что отвечает именно только что запущенный процесс, а не
-   случайно оставшийся на порту 8000 старый;
-7. проверит `docker ps`;
-8. **выведет логин и пароль первой учётной записи администратора** (только один раз —
-   пароль хранится в базе только в виде хеша и повторно нигде не показывается);
-9. если что-то не так — завершится с ошибкой и покажет последние строки лога.
+1. Python 3.10+ venv + зависимости  
+2. Docker (только для MTProxy) + pull `telegrammessenger/proxy`  
+3. Удаляет legacy контейнеры `wg_server` / `xray_server`  
+4. `wireguard-tools`, `nftables`, `ip_forward`  
+5. Xray-core (`/usr/local/bin/xray`)  
+6. systemd-юнит панели **от root** (нужен для wg/nft/xray)  
+7. Базовая nftables-таблица + ufw allow при активном ufw  
 
-После установки открой `http://<IP_СЕРВЕРА>:8000/` и войди.
-
-### Первая настройка WireGuard / VLESS
-
-Оба раздела при первом заходе показывают форму настройки сервера
-(порт + пара дополнительных параметров) — заполняется один раз. После
-этого добавление клиентов сводится к вводу имени устройства: все ключи,
-IP-адреса, готовые конфиги, ссылки и QR-коды генерируются панелью
-автоматически, вручную ничего вписывать не нужно.
-
-### Остановка / перезапуск
-
-Если панель установлена как systemd-сервис (обычный случай на Ubuntu Server):
+### Миграция со старого Docker-WG/Xray
 
 ```bash
-systemctl status mtproxy-panel     # статус
-systemctl restart mtproxy-panel    # перезапустить
-systemctl stop mtproxy-panel       # остановить
-journalctl -u mtproxy-panel -f     # логи сервиса вживую
+git fetch origin
+git checkout cursor/native-vpn-stack-3616   # или main после merge
+bash install.sh
+# В панели: WireGuard → Сброс → Настроить заново → новый QR на телефон
+# То же для VLESS (не поднимайте оба сразу, пока тестируете)
 ```
 
-Панель автоматически запустится при следующей загрузке сервера и сама перезапустится
-при сбое (`Restart=on-failure` в юните). Если systemd недоступен — используется старый
-способ через `nohup`/`run.pid`:
+### Диагностика
 
 ```bash
-kill $(cat run.pid)      # остановить панель (Docker-контейнеры продолжат работать)
-bash install.sh          # перезапустить
+bash tools/quick_check.sh
+bash tools/diagnose.sh
+systemctl status wg-quick@wg0
+systemctl status xray
+wg show
+nft list table inet mtproxy-panel
 ```
 
-### Логи
+После handshake у WireGuard **transfer должен расти** (KiB→MiB). Если снова
+1–3 KiB — смотрите облачный firewall / nftables masquerade / `ip_forward`.
 
-Смотреть можно прямо в браузере на странице `/logs`, либо:
+## Технические детали
 
-```bash
-tail -f logs/uvicorn.log   # логи процесса uvicorn
-tail -f logs/app.log       # логи приложения (RotatingFileHandler)
-```
+**WireGuard**: Curve25519 keys. Конфиг в `/etc/wireguard/wg0.conf` без PostUp —
+NAT делает nftables (`masquerade` для VPN-подсети, `oifname != wg0`).
+Клиентский MTU = 1280.
 
-## Технические детали протоколов
+**VLESS + REALITY**: Vision (`xtls-rprx-vision`), dest по умолчанию
+`www.cloudflare.com:443`. Список клиентов — перезапись config.json +
+`systemctl restart xray`.
 
-**MTProxy secret**: базовый секрет всегда 32-hex символа — именно в этом
-виде принимает его официальный образ `telegrammessenger/proxy`. Префиксы
-`dd`/`ee` и hex-encoded домен для fake-TLS добавляются ТОЛЬКО в клиентскую
-ссылку — сервер их никогда не видит.
+**MTProxy**: без изменений, Docker bridge + published TCP ports.
 
-**WireGuard**: ключи — Curve25519 (X25519), base64 с padding. NAT
-настраивается через `PostUp`/`PostDown` в `wg0.conf` (MASQUERADE через
-`eth0` — единственный сетевой интерфейс контейнера). Обновление списка
-клиентов — `wg syncconf`, без разрыва существующих соединений.
+## Безопасность
 
-**VLESS + REALITY**: ключи — тот же X25519, но base64 URL-safe без
-padding (формат вывода `xray x25519`). Клиенты используют flow
-`xtls-rprx-vision`. Список клиентов применяется перезаписью `config.json`
-и контролируемым перезапуском контейнера (у Xray нет встроенного аналога
-`wg syncconf` без дополнительной настройки gRPC API — перезапуск быстрый
-и не создаёт "полуготовых" состояний благодаря проверке статуса после
-каждого перезапуска).
-
-## Примечания по безопасности
-
-- Все секреты и приватные ключи (MTProxy secret, WireGuard/REALITY
-  private key) генерируются через `secrets`/`cryptography`, никогда
-  через `random` или предсказуемые источники.
-- Пароль администратора хранится только в виде PBKDF2-HMAC-SHA256 хеша
-  с уникальной солью.
-- `data/wireguard/` и `data/xray/` (содержат приватные ключи и живые
-  конфиги) исключены из git через `.gitignore`.
-- Панель по умолчанию слушает `0.0.0.0:8000` без TLS. Для доступа из
-  интернета рекомендуется закрыть порт 8000 файрволом и открывать доступ
-  через SSH-туннель, либо добавить TLS самостоятельно на внешнем уровне.
-
-## Как выложить проект на свой GitHub
-
-```bash
-cd mtproxy-panel
-git init
-git add .
-git commit -m "MTProxy + WireGuard + VLESS Control Panel"
-git branch -M main
-git remote add origin https://github.com/<твой_логин>/<имя_репозитория>.git
-git push -u origin main
-```
+- Ключи через `secrets` / `cryptography`
+- Пароль админа: PBKDF2-HMAC-SHA256
+- `/etc/wireguard/*.conf` mode 0600
+- Панель на `:8000` без TLS — ограничьте доступ (SSH-туннель / firewall)

@@ -1,6 +1,6 @@
 """
 Repository Pattern для VPN-подсистем: WireGuard и Xray/VLESS.
-Только CRUD, никакой бизнес-логики (генерация ключей, Docker-операции
+Только CRUD, никакой бизнес-логики (генерация ключей, systemd/nftables
 и т.д. находятся в vpn_service.py / wireguard_manager.py / xray_manager.py).
 """
 from __future__ import annotations
@@ -146,6 +146,13 @@ class WireGuardRepository:
             created_at=created_at,
         )
 
+    def update_peer_config(self, peer_id: int, *, config_text: str) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                f"UPDATE {config.WG_PEERS_TABLE_NAME} SET config_text = ? WHERE id = ?",
+                (config_text, peer_id),
+            )
+
     def delete_peer(self, peer_id: int) -> WireGuardPeer:
         peer = self.get_peer_by_id(peer_id)
         with get_connection() as connection:
@@ -266,6 +273,13 @@ class XrayRepository:
             id=new_id, name=name, client_uuid=client_uuid,
             vless_link=vless_link, qr_filename=qr_filename, created_at=created_at,
         )
+
+    def update_client_link(self, client_id: int, *, vless_link: str) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                f"UPDATE {config.VLESS_CLIENTS_TABLE_NAME} SET vless_link = ? WHERE id = ?",
+                (vless_link, client_id),
+            )
 
     def delete_client(self, client_id: int) -> VlessClient:
         client = self.get_client_by_id(client_id)

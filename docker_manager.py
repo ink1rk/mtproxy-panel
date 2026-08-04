@@ -80,6 +80,12 @@ class DockerManager:
         secret: str,
     ) -> Container:
         """Создаёт и запускает контейнер telegrammessenger/proxy."""
+        from docker.types import LogConfig
+
+        log_config = LogConfig(
+            type=LogConfig.types.JSON,
+            config=config.DOCKER_LOG_CONFIG["config"],
+        )
         container = self._client.containers.run(
             config.MTPROXY_DOCKER_IMAGE,
             name=container_name,
@@ -87,6 +93,7 @@ class DockerManager:
             restart_policy={"Name": "unless-stopped"},
             ports={f"{config.CONTAINER_INTERNAL_PORT}/tcp": host_port},
             environment={"SECRET": secret},
+            log_config=log_config,
         )
         return container
 
