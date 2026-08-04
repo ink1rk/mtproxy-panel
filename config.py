@@ -150,11 +150,11 @@ WG_KEEPALIVE_SECONDS: int = 25
 WG_CLIENT_MTU: int = 1420
 WG_START_TIMEOUT_SECONDS: float = 45.0
 WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
-# host: WG слушает :51820 в netns хоста — не нужен iptables DOCKER/DNAT
-# (на части VPS цепочка DOCKER отсутствует → контейнер не стартует).
-# bridge: классический проброс порта (нужен рабочий Docker iptables).
-WG_NETWORK_MODE: str = "host"
-# WAN-интерфейс для MASQUERADE (на Timeweb/большинстве VPS — eth0).
+# Как официальный wg-easy: bridge + published UDP.
+# Перед стартом чиним Docker iptables (iptables-legacy), иначе DNAT падает.
+# Если bridge всё равно не встаёт — manager делает fallback на host.
+WG_NETWORK_MODE: str = "bridge"
+# WG_DEVICE у wg-easy: eth0 внутри контейнера (docker bridge iface).
 WG_DOCKER_WAN_IFACE: str = "eth0"
 
 WG_SERVER_CONFIG_TABLE_NAME: str = "wg_server_config"

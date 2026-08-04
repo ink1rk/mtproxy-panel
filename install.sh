@@ -4,10 +4,10 @@
 #
 # Стек:
 #   - FastAPI panel (systemd, root — нужен для wg/nft/xray)
-#   - WireGuard: Docker host-network + PostUp MASQUERADE (как wg-easy)
+#   - WireGuard: Docker bridge + PostUp как wg-easy v14 (+ host fallback)
 #   - Xray: native binary + systemd xray.service
 #   - MTProxy: Docker (один контейнер на прокси)
-#   - Firewall: nftables (порты); WG-NAT внутри контейнера
+#   - Firewall: nftables (порты); WG-NAT PostUp внутри контейнера
 #
 # Запуск: bash install.sh
 
@@ -245,13 +245,11 @@ ensure_mtproxy_image() {
 }
 
 remove_legacy_docker_vpn() {
-    # Старый ошибочный стек: WG/Xray в Docker. Удаляем контейнеры, если остались.
-    for name in wg_server xray_server; do
-        if as_root docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${name}"; then
-            log "Удаляю legacy Docker-контейнер ${name}."
-            as_root docker rm -f "${name}" >/dev/null 2>&1 || true
-        fi
-    done
+    # Xray больше не в Docker — только xray_server. wg_server — ТЕКУЩИЙ стек, не трогаем.
+    if as_root docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "xray_server"; then
+        log "Удаляю legacy Docker-контейнер xray_server."
+        as_root docker rm -f "xray_server" >/dev/null 2>&1 || true
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -702,7 +700,7 @@ main() {
     log "==============================================================="
     log " MTProxy Control Panel (native VPN stack) установлена."
     log " Откройте в браузере: http://<IP_ЭТОГО_СЕРВЕРА>:${APP_PORT}/"
-    log " WireGuard: Docker wg_server (host net + MASQUERADE)"
+    log " WireGuard: Docker wg_server (wg-easy PostUp + bridge/host)"
     log " VLESS:     systemd xray.service"
     log " MTProxy:   Docker (telegrammessenger/proxy)"
     if grep -q "СОЗДАНА ПЕРВАЯ УЧЁТНАЯ ЗАПИСЬ" "${APP_LOG}" 2>/dev/null; then

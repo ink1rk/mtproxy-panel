@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import config
 import host_exec
+from docker_iptables import docker_nat_chain_exists
 
 logger = logging.getLogger(__name__)
 
@@ -90,42 +91,60 @@ def _check_port(port: int, proto: str) -> CheckResult:
     )
 
 
-def _check_wg_inside(subnet: str) -> CheckResult:
-    wan = config.WG_DOCKER_WAN_IFACE
+def _check_wg_inside(subnet: str, listen_port: int) -> CheckResult:
     show = host_exec.run(
         ["docker", "exec", config.WG_CONTAINER_NAME, "wg", "show"],
         check=False,
     )
     nat = host_exec.run(
-        ["docker", "exec", config.WG_CONTAINER_NAME, "iptables", "-t", "nat", "-S", "POSTROUTING"],
+        [
+            "docker", "exec", config.WG_CONTAINER_NAME,
+            "iptables", "-t", "nat", "-S", "POSTROUTING",
+        ],
         check=False,
     )
     fwd = host_exec.run(
         ["docker", "exec", config.WG_CONTAINER_NAME, "iptables", "-S", "FORWARD"],
         check=False,
     )
-    has_iface = show.ok and "interface:" in show.stdout
-    has_masq = (
-        nat.ok
-        and "MASQUERADE" in nat.stdout
-        and (f"-o {wan}" in nat.stdout or wan in nat.stdout)
+    mode = host_exec.run(
+        [
+            "docker", "inspect", "-f",
+            "{{.HostConfig.NetworkMode}}", config.WG_CONTAINER_NAME,
+        ],
+        check=False,
     )
-    has_fwd = fwd.ok and "-i wg0" in fwd.stdout
+    has_iface = show.ok and "interface:" in show.stdout
+    has_masq = nat.ok and "MASQUERADE" in nat.stdout
+    has_fwd = fwd.ok and "-i wg0" in fwd.stdout and "-o wg0" in fwd.stdout
+    net_mode = (mode.stdout or "").strip() or "?"
     ok = has_iface and has_masq and has_fwd
     detail = (
         f"wg0={'yes' if has_iface else 'NO'} "
-        f"masq_{wan}={'yes' if has_masq else 'NO'} "
-        f"fwd={'yes' if has_fwd else 'NO'} "
-        f"net={config.WG_NETWORK_MODE} subnet={subnet}"
+        f"masq={'yes' if has_masq else 'NO'} "
+        f"fwd_wg0={'yes' if has_fwd else 'NO'} "
+        f"net={net_mode} subnet={subnet} udp={listen_port} "
+        f"want_wan={config.WG_DOCKER_WAN_IFACE}"
     )
     return CheckResult(name="routing/nat", ok=ok, detail=detail)
+
+
+def _check_docker_dnat() -> CheckResult:
+    exists = docker_nat_chain_exists()
+    return CheckResult(
+        name="docker iptables",
+        ok=True,  # info: host-fallback возможен без DOCKER
+        detail=f"nat/DOCKER={'yes' if exists else 'NO (bridge publish broken)'}",
+    )
 
 
 def _check_external_connectivity() -> CheckResult:
     last_err = ""
     for url in config.PUBLIC_IP_LOOKUP_URLS:
         try:
-            with urllib.request.urlopen(url, timeout=config.PUBLIC_IP_LOOKUP_TIMEOUT_SECONDS) as resp:
+            with urllib.request.urlopen(
+                url, timeout=config.PUBLIC_IP_LOOKUP_TIMEOUT_SECONDS
+            ) as resp:
                 body = resp.read().decode("utf-8", "replace").strip()
                 if body:
                     return CheckResult(
@@ -146,7 +165,8 @@ def check_wireguard(*, listen_port: int, subnet: str) -> HealthReport:
     report = HealthReport(service="wireguard")
     report.checks.append(_check_docker_running(config.WG_CONTAINER_NAME))
     report.checks.append(_check_port(listen_port, "udp"))
-    report.checks.append(_check_wg_inside(subnet))
+    report.checks.append(_check_wg_inside(subnet, listen_port))
+    report.checks.append(_check_docker_dnat())
     report.checks.append(_check_external_connectivity())
     if not report.ok:
         logger.error("%s", report.format())

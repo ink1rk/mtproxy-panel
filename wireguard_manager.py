@@ -1,13 +1,20 @@
 """
-WireGuard в Docker — схема как у wg-easy (PostUp MASQUERADE -o <WAN>):
+WireGuard в Docker — копия рабочего рецепта wg-easy:
 
-  - NET_ADMIN + ip_forward
-  - наш wg0.conf (без PEERS= у linuxserver)
-  - network_mode=host по умолчанию: не зависит от сломанной
-    цепочки iptables DOCKER/DNAT на хосте
+  docker run \\
+    --cap-add=NET_ADMIN --cap-add=SYS_MODULE \\
+    --sysctl net.ipv4.conf.all.src_valid_mark=1 \\
+    --sysctl net.ipv4.ip_forward=1 \\
+    -p 51820:51820/udp \\
+    ...
 
-Native wg-quick@wg0 на хосте отключается: конфликт по UDP 51820.
-Xray остаётся native; MTProxy — Docker.
+PostUp — default из wg-easy v14 config.js.
+Перед bridge-publish чиним Docker iptables (iptables-legacy + restart),
+иначе на Ubuntu появляется:
+  Unable to enable DNAT rule ... No chain/target/match by that name
+
+Fallback: network_mode=host (если publish всё ещё невозможен).
+Native wg-quick@wg0 глушится (конфликт UDP).
 """
 from __future__ import annotations
 
@@ -21,6 +28,11 @@ from docker.types import LogConfig
 
 import config
 import host_exec
+from docker_iptables import (
+    DockerIptablesError,
+    docker_nat_chain_exists,
+    ensure_docker_iptables,
+)
 from docker_utils import ensure_image, format_docker_api_error
 
 logger = logging.getLogger(__name__)
@@ -67,34 +79,28 @@ class WireGuardManager:
         return container.status
 
     def _stop_native_wg_quick(self) -> None:
-        """Освобождаем UDP 51820: native wg-quick и Docker не могут слушать вместе."""
         try:
             host_exec.systemctl("disable", "--now", config.WG_SYSTEMD_UNIT, check=False)
             host_exec.run(["wg-quick", "down", config.WG_INTERFACE_NAME], check=False)
-            host_exec.run(["ip", "link", "delete", "dev", config.WG_INTERFACE_NAME], check=False)
+            host_exec.run(
+                ["ip", "link", "delete", "dev", config.WG_INTERFACE_NAME],
+                check=False,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Не удалось остановить native wg-quick: %s", exc)
 
     def _force_remove_container(self) -> None:
-        """Всегда убираем stale wg_server (в т.ч. status=created после DNAT fail)."""
         container = self._get_container()
-        if container is None:
-            host_exec.run(
-                ["docker", "rm", "-f", config.WG_CONTAINER_NAME],
-                check=False,
-            )
-            return
-        try:
-            container.remove(force=True)
-        except APIError as exc:
-            logger.warning(
-                "API remove WG failed (%s), docker rm -f",
-                format_docker_api_error(exc),
-            )
-            host_exec.run(
-                ["docker", "rm", "-f", config.WG_CONTAINER_NAME],
-                check=False,
-            )
+        if container is not None:
+            try:
+                container.remove(force=True)
+                return
+            except APIError as exc:
+                logger.warning(
+                    "API remove WG failed (%s), docker rm -f",
+                    format_docker_api_error(exc),
+                )
+        host_exec.run(["docker", "rm", "-f", config.WG_CONTAINER_NAME], check=False)
 
     def _container_network_mode(self, container: Container) -> str:
         try:
@@ -102,17 +108,6 @@ class WireGuardManager:
         except APIError:
             return ""
         return str((container.attrs.get("HostConfig") or {}).get("NetworkMode") or "")
-
-    def _ensure_host_forwarding(self) -> None:
-        """sysctl в host-network режиме задаётся на хосте, не через Docker."""
-        host_exec.run(
-            ["sysctl", "-w", "net.ipv4.ip_forward=1"],
-            check=False,
-        )
-        host_exec.run(
-            ["sysctl", "-w", "net.ipv4.conf.all.src_valid_mark=1"],
-            check=False,
-        )
 
     def write_config(self, conf_text: str) -> None:
         wg_confs = config.WG_CONFIG_DIR / "wg_confs"
@@ -124,111 +119,163 @@ class WireGuardManager:
         except OSError:
             pass
 
+    def _prepare_docker_for_bridge(self) -> None:
+        """Проверенный фикс DNAT перед publish UDP."""
+        try:
+            info = ensure_docker_iptables(force_repair=False)
+            logger.info("Docker iptables: %s", info)
+            if info.get("repaired") == "yes":
+                # После systemctl restart docker SDK-клиент надо пересоздать.
+                self._client = docker.from_env()
+                self._client.ping()
+        except DockerIptablesError as exc:
+            logger.error("Docker iptables repair failed: %s", exc)
+            raise WireGuardError(
+                f"Docker не может публиковать порты (DOCKER/DNAT): {exc}"
+            ) from exc
+
+    def _run_kwargs(self, *, listen_port: int, network_mode: str) -> dict:
+        kwargs: dict = dict(
+            image=config.WG_DOCKER_IMAGE,
+            name=config.WG_CONTAINER_NAME,
+            detach=True,
+            restart_policy={"Name": "unless-stopped"},
+            cap_add=["NET_ADMIN", "SYS_MODULE"],
+            # Как официальный docker run wg-easy — без PEERS у linuxserver
+            environment={"PUID": "0", "PGID": "0"},
+            volumes={
+                str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"},
+                "/lib/modules": {"bind": "/lib/modules", "mode": "ro"},
+            },
+            log_config=_log_config(),
+        )
+        if network_mode == "host":
+            kwargs["network_mode"] = "host"
+            # sysctl в host-net Docker запрещает — на хосте уже выставляем
+            host_exec.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False)
+            host_exec.run(
+                ["sysctl", "-w", "net.ipv4.conf.all.src_valid_mark=1"],
+                check=False,
+            )
+        else:
+            kwargs["network_mode"] = "bridge"
+            kwargs["ports"] = {f"{listen_port}/udp": listen_port}
+            kwargs["sysctls"] = {
+                "net.ipv4.conf.all.src_valid_mark": "1",
+                "net.ipv4.ip_forward": "1",
+            }
+        return kwargs
+
+    def _create_container(self, run_kwargs: dict) -> Container:
+        try:
+            return self._client.containers.run(
+                **run_kwargs,
+                devices=["/dev/net/tun:/dev/net/tun"],
+            )
+        except APIError as tun_exc:
+            logger.warning(
+                "WG с /dev/net/tun не стартовал (%s), пробую без devices",
+                format_docker_api_error(tun_exc),
+            )
+            self._force_remove_container()
+            try:
+                return self._client.containers.run(**run_kwargs)
+            except APIError as exc:
+                self._force_remove_container()
+                raise WireGuardError(
+                    f"Не удалось создать контейнер WG: {format_docker_api_error(exc)}"
+                ) from exc
+
     def ensure_server_running(
         self,
         *,
         conf_text: str,
         listen_port: int,
         subnet: str,
-        xray_port: int | None = None,  # noqa: ARG002 — совместимость вызова
+        xray_port: int | None = None,  # noqa: ARG002
     ) -> None:
         self._stop_native_wg_quick()
         self.write_config(conf_text)
-        if config.WG_NETWORK_MODE == "host":
-            self._ensure_host_forwarding()
 
+        preferred = config.WG_NETWORK_MODE  # "bridge" (wg-easy) или "host"
         container = self._get_container()
         if container is not None:
             container.reload()
             mode = self._container_network_mode(container)
-            if container.status == "running" and mode == config.WG_NETWORK_MODE:
-                self._ensure_config_writable(container)
-                code, out = container.exec_run(
-                    [
-                        "bash", "-c",
-                        f"wg syncconf {config.WG_INTERFACE_NAME} "
-                        f"<(wg-quick strip /config/wg_confs/{config.WG_INTERFACE_NAME}.conf)",
-                    ]
-                )
-                if code != 0:
-                    logger.warning("syncconf: %s — restart", out.decode("utf-8", "replace"))
-                    container.restart(timeout=10)
-                    self._wait_running(container)
-                    self.wait_until_interface_ready()
-                self._ensure_nat_inside(subnet)
-                return
+            # default bridge often reported as "default" / "bridge"
+            normalized = "bridge" if mode in {"", "default", "bridge"} else mode
+            if container.status == "running":
+                if normalized == preferred:
+                    self._sync_and_nat(container, subnet, listen_port=listen_port)
+                    return
+                # Рабочий host-fallback не трогаем, пока Docker DNAT мёртв.
+                if (
+                    normalized == "host"
+                    and preferred == "bridge"
+                    and not docker_nat_chain_exists()
+                ):
+                    logger.warning(
+                        "WG работает в host (fallback): nat/DOCKER нет — оставляю"
+                    )
+                    self._sync_and_nat(container, subnet, listen_port=listen_port)
+                    return
             logger.warning(
                 "Контейнер WG status=%s network_mode=%s (want %s) — пересоздаю",
                 container.status,
                 mode or "?",
-                config.WG_NETWORK_MODE,
+                preferred,
             )
             self._force_remove_container()
 
-        logger.info(
-            "Создаю WireGuard Docker network_mode=%s udp/%d wan=%s",
-            config.WG_NETWORK_MODE,
-            listen_port,
-            config.WG_DOCKER_WAN_IFACE,
-        )
-        try:
-            ensure_image(self._client, config.WG_DOCKER_IMAGE)
-            run_kwargs: dict = dict(
-                image=config.WG_DOCKER_IMAGE,
-                name=config.WG_CONTAINER_NAME,
-                detach=True,
-                restart_policy={"Name": "unless-stopped"},
-                cap_add=["NET_ADMIN", "SYS_MODULE"],
-                # ВАЖНО: PEERS не задаём — иначе linuxserver затрёт наш wg0.conf
-                environment={"PUID": "0", "PGID": "0"},
-                volumes={
-                    str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"},
-                    "/lib/modules": {"bind": "/lib/modules", "mode": "ro"},
-                },
-                log_config=_log_config(),
-                network_mode=config.WG_NETWORK_MODE,
-            )
-            if config.WG_NETWORK_MODE != "host":
-                # bridge: нужен рабочий iptables DOCKER chain
-                run_kwargs["ports"] = {f"{listen_port}/udp": listen_port}
-                run_kwargs["sysctls"] = {
-                    "net.ipv4.conf.all.src_valid_mark": "1",
-                    "net.ipv4.ip_forward": "1",
-                }
+        ensure_image(self._client, config.WG_DOCKER_IMAGE)
 
+        modes_to_try = ["bridge", "host"] if preferred == "bridge" else ["host"]
+
+        last_error: Exception | None = None
+        for mode in modes_to_try:
             try:
-                container = self._client.containers.run(
-                    **run_kwargs,
-                    devices=["/dev/net/tun:/dev/net/tun"],
+                if mode == "bridge":
+                    self._prepare_docker_for_bridge()
+                logger.info(
+                    "Создаю WG Docker mode=%s udp/%d wan=%s (как wg-easy)",
+                    mode,
+                    listen_port,
+                    config.WG_DOCKER_WAN_IFACE,
                 )
-            except APIError as tun_exc:
-                logger.warning(
-                    "WG с /dev/net/tun не стартовал (%s), пробую без devices",
-                    format_docker_api_error(tun_exc),
-                )
-                # Критично: после неудачного start остаётся container status=created
-                # с тем же именем → 409 Conflict на повторном create.
+                run_kwargs = self._run_kwargs(listen_port=listen_port, network_mode=mode)
+                container = self._create_container(run_kwargs)
+                self._wait_running(container)
+                self._ensure_config_writable(container)
+                self.wait_until_interface_ready()
+                self._ensure_nat_inside(subnet, listen_port=listen_port)
+                return
+            except (WireGuardError, APIError, RuntimeError, DockerIptablesError) as exc:
+                last_error = exc
+                logger.error("WG mode=%s failed: %s", mode, exc)
                 self._force_remove_container()
-                try:
-                    container = self._client.containers.run(**run_kwargs)
-                except APIError as exc:
-                    self._force_remove_container()
-                    raise WireGuardError(
-                        f"Не удалось создать контейнер WG: {format_docker_api_error(exc)}"
-                    ) from exc
-        except RuntimeError as exc:
-            self._force_remove_container()
-            raise WireGuardError(str(exc)) from exc
-        except APIError as exc:
-            self._force_remove_container()
-            raise WireGuardError(
-                f"Не удалось создать контейнер WG: {format_docker_api_error(exc)}"
-            ) from exc
+                continue
 
-        self._wait_running(container)
+        raise WireGuardError(
+            f"Не удалось поднять WireGuard ни в bridge, ни в host: {last_error}"
+        )
+
+    def _sync_and_nat(
+        self, container: Container, subnet: str, *, listen_port: int,
+    ) -> None:
         self._ensure_config_writable(container)
-        self.wait_until_interface_ready()
-        self._ensure_nat_inside(subnet)
+        code, out = container.exec_run(
+            [
+                "bash", "-c",
+                f"wg syncconf {config.WG_INTERFACE_NAME} "
+                f"<(wg-quick strip /config/wg_confs/{config.WG_INTERFACE_NAME}.conf)",
+            ]
+        )
+        if code != 0:
+            logger.warning("syncconf: %s — restart", out.decode("utf-8", "replace"))
+            container.restart(timeout=10)
+            self._wait_running(container)
+            self.wait_until_interface_ready()
+        self._ensure_nat_inside(subnet, listen_port=listen_port)
 
     def _ensure_config_writable(self, container: Container) -> None:
         try:
@@ -291,18 +338,21 @@ class WireGuardManager:
         code, _ = container.exec_run(["ip", "link", "show", "dev", wan])
         if code == 0:
             return wan
-        # fallback: default route
         code, out = container.exec_run(
-            ["bash", "-c", "ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i==\"dev\"){print $(i+1); exit}}'"]
+            [
+                "bash", "-c",
+                "ip -4 route show default | awk '{for(i=1;i<=NF;i++) "
+                "if($i==\"dev\"){print $(i+1); exit}}'",
+            ]
         )
         detected = out.decode("utf-8", "replace").strip() if code == 0 else ""
         if detected:
-            logger.warning("WAN %s нет, использую %s", wan, detected)
+            logger.warning("WAN %s нет внутри контейнера, использую %s", wan, detected)
             return detected
         return wan
 
-    def _ensure_nat_inside(self, subnet: str) -> None:
-        """Дожимает NAT (как WG_POST_UP у wg-easy) на WAN-интерфейсе."""
+    def _ensure_nat_inside(self, subnet: str, *, listen_port: int) -> None:
+        """Идемпотентно дожимает те же правила, что PostUp wg-easy."""
         container = self._get_container()
         if container is None:
             return
@@ -311,11 +361,13 @@ class WireGuardManager:
         script = f"""
 set -e
 iptables -P FORWARD ACCEPT 2>/dev/null || true
-iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT
-iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o wg0 -j ACCEPT
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
 iptables -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE 2>/dev/null \\
   || iptables -t nat -A POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE
-sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+iptables -C INPUT -p udp -m udp --dport {listen_port} -j ACCEPT 2>/dev/null \\
+  || iptables -A INPUT -p udp -m udp --dport {listen_port} -j ACCEPT
+iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT
+iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o wg0 -j ACCEPT
 echo NAT_OK wan={wan}
 iptables -t nat -S POSTROUTING
 wg show || true
@@ -323,18 +375,13 @@ wg show || true
         code, out = container.exec_run(["bash", "-c", script])
         text = out.decode("utf-8", "replace")
         if code != 0:
-            raise WireGuardError(f"NAT внутри контейнера не применился: {text}")
-        logger.info("WG container NAT: %s", text.strip().replace("\n", " | "))
+            raise WireGuardError(f"NAT (wg-easy PostUp) не применился: {text}")
+        logger.info("WG NAT: %s", text.strip().replace("\n", " | "))
 
     def reload_config(self, *, conf_text: str, listen_port: int, subnet: str) -> None:
         self.write_config(conf_text)
         container = self._get_container()
         if container is None or not self.is_running():
-            self.ensure_server_running(
-                conf_text=conf_text, listen_port=listen_port, subnet=subnet,
-            )
-            return
-        if self._container_network_mode(container) != config.WG_NETWORK_MODE:
             self.ensure_server_running(
                 conf_text=conf_text, listen_port=listen_port, subnet=subnet,
             )
@@ -348,11 +395,12 @@ wg show || true
             ]
         )
         if code != 0:
-            logger.warning("syncconf failed (%s) — restart container", out)
-            container.restart(timeout=10)
-            self._wait_running(container)
-            self.wait_until_interface_ready()
-        self._ensure_nat_inside(subnet)
+            logger.warning("syncconf failed (%s) — ensure recreate", out)
+            self.ensure_server_running(
+                conf_text=conf_text, listen_port=listen_port, subnet=subnet,
+            )
+            return
+        self._ensure_nat_inside(subnet, listen_port=listen_port)
 
     def get_peer_last_handshakes(self) -> dict[str, int]:
         container = self._get_container()

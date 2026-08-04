@@ -1,9 +1,19 @@
 """
 Генерация конфигов WireGuard.
 
-Серверный PostUp — как в wg-easy (Emile Nijssen):
-  MASQUERADE -o <WAN> (по умолчанию eth0).
-При network_mode=host это реальный WAN хоста; при bridge — eth0 контейнера.
+PostUp/PostDown — ДОСЛОВНО default из wg-easy v14 src/config.js:
+  https://github.com/wg-easy/wg-easy/blob/v14/src/config.js
+
+  iptables -t nat -A POSTROUTING -s <subnet> -o <device> -j MASQUERADE;
+  iptables -A INPUT -p udp -m udp --dport <port> -j ACCEPT;
+  iptables -A FORWARD -i wg0 -j ACCEPT;
+  iptables -A FORWARD -o wg0 -j ACCEPT;
+
+Интерфейс в FORWARD — литерал wg0 (не %i):
+  AskUbuntu #1354741 — %i ломает NAT («handshake ok, no internet»).
+
+Клиент AllowedIPs только IPv4 (0.0.0.0/0):
+  wg-easy#562 — ::/0 без IPv6-NAT = «подключён, интернета нет».
 """
 from __future__ import annotations
 
@@ -32,36 +42,41 @@ def server_tunnel_address(subnet: str) -> str:
     return f"{base}.1"
 
 
+def wg_easy_post_up(*, subnet: str, listen_port: int, device: str) -> str:
+    """Default WG_POST_UP из wg-easy v14 (одной строкой, без кавычек)."""
+    network_cidr = subnet if "/" in subnet else f"{subnet}/24"
+    return (
+        f"iptables -t nat -A POSTROUTING -s {network_cidr} -o {device} -j MASQUERADE; "
+        f"iptables -A INPUT -p udp -m udp --dport {listen_port} -j ACCEPT; "
+        f"iptables -A FORWARD -i wg0 -j ACCEPT; "
+        f"iptables -A FORWARD -o wg0 -j ACCEPT"
+    )
+
+
+def wg_easy_post_down(*, subnet: str, listen_port: int, device: str) -> str:
+    """Default WG_POST_DOWN из wg-easy v14."""
+    network_cidr = subnet if "/" in subnet else f"{subnet}/24"
+    return (
+        f"iptables -t nat -D POSTROUTING -s {network_cidr} -o {device} -j MASQUERADE; "
+        f"iptables -D INPUT -p udp -m udp --dport {listen_port} -j ACCEPT; "
+        f"iptables -D FORWARD -i wg0 -j ACCEPT; "
+        f"iptables -D FORWARD -o wg0 -j ACCEPT"
+    )
+
+
 def render_server_config(
     *,
     server_private_key: str,
     listen_port: int,
     subnet: str,
     peers: list[PeerForConfig],
+    wan_device: str | None = None,
 ) -> str:
-    """
-    wg0.conf для контейнера (linuxserver bare mode / как wg-easy).
-
-    PostUp идентичен рабочему рецепту wg-easy:
-      iptables -t nat -A POSTROUTING -s <subnet> -o <WAN> -j MASQUERADE
-      iptables -A FORWARD -i %i -j ACCEPT
-      iptables -A FORWARD -o %i -j ACCEPT
-    """
+    """wg0.conf для linuxserver bare mode с PostUp как у wg-easy."""
     _, prefix = _subnet_base_and_prefix(subnet)
-    network_cidr = subnet if "/" in subnet else f"{subnet}/{prefix}"
-    wan = config.WG_DOCKER_WAN_IFACE
-    # Простые команды через ';'. Никаких || и внешних .sh —
-    # иначе wg-quick откатывает интерфейс (как было с mtproxy-wg-nat.sh).
-    post_up = (
-        f"iptables -t nat -A POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE; "
-        f"iptables -A FORWARD -i %i -j ACCEPT; "
-        f"iptables -A FORWARD -o %i -j ACCEPT"
-    )
-    post_down = (
-        f"iptables -t nat -D POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE; "
-        f"iptables -D FORWARD -i %i -j ACCEPT; "
-        f"iptables -D FORWARD -o %i -j ACCEPT"
-    )
+    device = wan_device or config.WG_DOCKER_WAN_IFACE
+    post_up = wg_easy_post_up(subnet=subnet, listen_port=listen_port, device=device)
+    post_down = wg_easy_post_down(subnet=subnet, listen_port=listen_port, device=device)
     lines = [
         "[Interface]",
         f"PrivateKey = {server_private_key}",
@@ -94,7 +109,7 @@ def render_client_config(
     server_listen_port: int,
     dns: str,
 ) -> str:
-    """Клиент для iOS/Android WireGuard. AllowedIPs только IPv4 (как безопасный дефолт)."""
+    """Клиент iOS/Android. Address /32, AllowedIPs только IPv4."""
     return "\n".join(
         [
             "[Interface]",
