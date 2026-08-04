@@ -102,26 +102,38 @@ class WireGuardManager:
         logger.info("Создаю контейнер WireGuard-сервера на порту %d/udp", listen_port)
         try:
             ensure_image(self._client, config.WG_DOCKER_IMAGE)
-            container = self._client.containers.run(
-                config.WG_DOCKER_IMAGE,
-                name=config.WG_CONTAINER_NAME,
-                detach=True,
-                restart_policy={"Name": "unless-stopped"},
-                # Без SYS_MODULE: на части VPS (Timeweb) он надолго подвешивает
-                # старт. Модуль WG на Ubuntu обычно уже в ядре; ip_forward — через sysctls.
-                cap_add=["NET_ADMIN"],
-                sysctls={
+            # /dev/net/tun обязателен: без него wg-quick не создаёт wg0
+            # («интерфейс не поднялся за Nс»), а страница setup в панели «висит».
+            # SYS_MODULE не добавляем — на Timeweb/части VPS он подвешивает старт.
+            run_kwargs: dict = {
+                "image": config.WG_DOCKER_IMAGE,
+                "name": config.WG_CONTAINER_NAME,
+                "detach": True,
+                "restart_policy": {"Name": "unless-stopped"},
+                "cap_add": ["NET_ADMIN"],
+                "sysctls": {
                     "net.ipv4.conf.all.src_valid_mark": "1",
                     "net.ipv4.ip_forward": "1",
                 },
-                ports={f"{listen_port}/udp": listen_port},
-                # ВАЖНО: PEERS не задаём вовсе (а не "0"!). У linuxserver/wireguard
-                # ЛЮБОЕ непустое значение PEERS (включая "0") включает "серверный"
-                # режим — образ САМ генерирует новый wg0.conf.
-                environment={"PUID": "0", "PGID": "0"},
-                volumes={str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"}},
-                log_config=_docker_log_config(),
-            )
+                "ports": {f"{listen_port}/udp": listen_port},
+                # ВАЖНО: PEERS не задаём вовсе (а не "0"!).
+                "environment": {"PUID": "0", "PGID": "0"},
+                "volumes": {str(config.WG_CONFIG_DIR): {"bind": "/config", "mode": "rw"}},
+                "log_config": _docker_log_config(),
+            }
+            # devices может быть недоступен в rootless docker — тогда пробуем без него,
+            # а ниже форсим wg-quick up и отдадим понятную ошибку.
+            try:
+                container = self._client.containers.run(
+                    **run_kwargs,
+                    devices=["/dev/net/tun:/dev/net/tun"],
+                )
+            except APIError as tun_exc:
+                logger.warning(
+                    "Не удалось создать WG с /dev/net/tun (%s) — пробую без devices",
+                    format_docker_api_error(tun_exc),
+                )
+                container = self._client.containers.run(**run_kwargs)
         except RuntimeError as exc:
             raise WireGuardDockerError(str(exc)) from exc
         except APIError as exc:
@@ -289,6 +301,7 @@ class WireGuardManager:
 
         deadline = time.monotonic() + timeout
         last_err = ""
+        forced_up = False
         while time.monotonic() < deadline:
             container.reload()
             if container.status in {"exited", "dead"}:
@@ -302,11 +315,38 @@ class WireGuardManager:
             if exit_code == 0:
                 return
             last_err = output.decode("utf-8", "replace").strip()
+
+            # linuxserver поднимает туннель асинхронно; если за первые секунды
+            # wg0 нет — форсим wg-quick up сами (часто чинит отсутствие автозапуска).
+            elapsed = timeout - (deadline - time.monotonic())
+            if not forced_up and elapsed >= 8.0:
+                forced_up = True
+                logger.info("Форсирую wg-quick up внутри контейнера WireGuard")
+                self._force_wg_quick_up(container)
+
             time.sleep(1.0)
         raise WireGuardDockerError(
             f"Интерфейс {config.WG_INTERFACE_NAME} не поднялся за {timeout:.0f}с. "
-            f"Последний ответ wg: {last_err or '(пусто)'}\n{self._container_diagnostics()}"
+            f"Последний ответ wg: {last_err or '(пусто)'}\n"
+            f"На сервере выполните: docker logs wg_server && "
+            f"ls -la /dev/net/tun && docker exec wg_server wg-quick up /config/wg_confs/wg0.conf\n"
+            f"{self._container_diagnostics()}"
         )
+
+    def _force_wg_quick_up(self, container: Container) -> None:
+        """Пытается поднять туннель вручную, если entrypoint задержался/упал."""
+        try:
+            container.exec_run(
+                [
+                    "bash", "-c",
+                    "test -e /dev/net/tun || "
+                    "(mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun); "
+                    f"wg-quick down /config/wg_confs/{config.WG_INTERFACE_NAME}.conf >/dev/null 2>&1 || true; "
+                    f"wg-quick up /config/wg_confs/{config.WG_INTERFACE_NAME}.conf",
+                ]
+            )
+        except APIError as exc:
+            logger.warning("force wg-quick up не удался: %s", format_docker_api_error(exc))
 
     def ensure_nat_rules(self, subnet: str) -> None:
         """
