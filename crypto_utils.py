@@ -51,6 +51,11 @@ def generate_wireguard_keypair() -> tuple[str, str]:
     return private_key, public_key
 
 
+def generate_wireguard_preshared_key() -> str:
+    """PresharedKey как у `wg genpsk` / wg-easy (32 random bytes, base64)."""
+    return base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+
+
 def generate_reality_keypair() -> tuple[str, str]:
     """
     Генерирует пару ключей для Xray REALITY.

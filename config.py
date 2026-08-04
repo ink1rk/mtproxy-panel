@@ -146,8 +146,8 @@ WG_DEFAULT_PORT: int = 51820
 WG_DEFAULT_SUBNET: str = "10.66.0.0/24"
 WG_DEFAULT_DNS: str = "1.1.1.1"
 WG_KEEPALIVE_SECONDS: int = 25
-# Как дефолт wg-easy (1420).
-WG_CLIENT_MTU: int = 1420
+# 1280 — безопаснее для LTE/CGNAT (wg-easy часто ставят так на мобильных).
+WG_CLIENT_MTU: int = 1280
 WG_START_TIMEOUT_SECONDS: float = 45.0
 WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
 # WAN для MASQUERADE; runtime ещё раз определяет через default route.
@@ -172,6 +172,7 @@ EXPECTED_WG_PEERS_COLUMNS: dict[str, str] = {
     "name": "TEXT NOT NULL UNIQUE",
     "private_key": "TEXT NOT NULL",
     "public_key": "TEXT NOT NULL",
+    "preshared_key": "TEXT NOT NULL DEFAULT ''",
     "allocated_ip": "TEXT NOT NULL UNIQUE",
     "config_text": "TEXT NOT NULL",
     "qr_filename": "TEXT NOT NULL",

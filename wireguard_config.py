@@ -1,19 +1,13 @@
 """
 Генерация конфигов WireGuard.
 
-PostUp/PostDown — ДОСЛОВНО default из wg-easy v14 src/config.js:
-  https://github.com/wg-easy/wg-easy/blob/v14/src/config.js
-
-  iptables -t nat -A POSTROUTING -s <subnet> -o <device> -j MASQUERADE;
-  iptables -A INPUT -p udp -m udp --dport <port> -j ACCEPT;
-  iptables -A FORWARD -i wg0 -j ACCEPT;
-  iptables -A FORWARD -o wg0 -j ACCEPT;
-
-Интерфейс в FORWARD — литерал wg0 (не %i):
-  AskUbuntu #1354741 — %i ломает NAT («handshake ok, no internet»).
-
-Клиент AllowedIPs только IPv4 (0.0.0.0/0):
-  wg-easy#562 — ::/0 без IPv6-NAT = «подключён, интернета нет».
+PostUp/PostDown — default из wg-easy v14.
+Клиентский формат — как отдаёт wg-easy API:
+  Address = <ip>/<subnet-prefix>   (не /32)
+  PresharedKey = ...
+  MTU = 1280
+  AllowedIPs = 0.0.0.0/0
+  PersistentKeepalive = 25
 """
 from __future__ import annotations
 
@@ -27,6 +21,7 @@ class PeerForConfig:
     name: str
     public_key: str
     allocated_ip: str
+    preshared_key: str = ""
 
 
 def _subnet_base_and_prefix(subnet: str) -> tuple[str, str]:
@@ -43,7 +38,6 @@ def server_tunnel_address(subnet: str) -> str:
 
 
 def wg_easy_post_up(*, subnet: str, listen_port: int, device: str) -> str:
-    """Default WG_POST_UP из wg-easy v14 (одной строкой, без кавычек)."""
     network_cidr = subnet if "/" in subnet else f"{subnet}/24"
     return (
         f"iptables -t nat -A POSTROUTING -s {network_cidr} -o {device} -j MASQUERADE; "
@@ -54,7 +48,6 @@ def wg_easy_post_up(*, subnet: str, listen_port: int, device: str) -> str:
 
 
 def wg_easy_post_down(*, subnet: str, listen_port: int, device: str) -> str:
-    """Default WG_POST_DOWN из wg-easy v14."""
     network_cidr = subnet if "/" in subnet else f"{subnet}/24"
     return (
         f"iptables -t nat -D POSTROUTING -s {network_cidr} -o {device} -j MASQUERADE; "
@@ -72,7 +65,6 @@ def render_server_config(
     peers: list[PeerForConfig],
     wan_device: str | None = None,
 ) -> str:
-    """wg0.conf для linuxserver bare mode с PostUp как у wg-easy."""
     _, prefix = _subnet_base_and_prefix(subnet)
     device = wan_device or config.WG_DOCKER_WAN_IFACE
     post_up = wg_easy_post_up(subnet=subnet, listen_port=listen_port, device=device)
@@ -93,6 +85,12 @@ def render_server_config(
                 f"# {peer.name}",
                 "[Peer]",
                 f"PublicKey = {peer.public_key}",
+            ]
+        )
+        if peer.preshared_key:
+            lines.append(f"PresharedKey = {peer.preshared_key}")
+        lines.extend(
+            [
                 f"AllowedIPs = {peer.allocated_ip}/32",
                 "",
             ]
@@ -108,24 +106,32 @@ def render_client_config(
     server_endpoint_ip: str,
     server_listen_port: int,
     dns: str,
+    subnet: str = config.WG_DEFAULT_SUBNET,
+    preshared_key: str = "",
 ) -> str:
-    """Клиент iOS/Android. Address /32, AllowedIPs только IPv4."""
-    return "\n".join(
+    """Клиент как у wg-easy: Address /prefix, PSK, MTU, IPv4-only AllowedIPs."""
+    _, prefix = _subnet_base_and_prefix(subnet)
+    lines = [
+        "[Interface]",
+        f"PrivateKey = {client_private_key}",
+        f"Address = {client_allocated_ip}/{prefix}",
+        f"DNS = {dns}",
+        f"MTU = {config.WG_CLIENT_MTU}",
+        "",
+        "[Peer]",
+        f"PublicKey = {server_public_key}",
+    ]
+    if preshared_key:
+        lines.append(f"PresharedKey = {preshared_key}")
+    lines.extend(
         [
-            "[Interface]",
-            f"PrivateKey = {client_private_key}",
-            f"Address = {client_allocated_ip}/32",
-            f"DNS = {dns}",
-            f"MTU = {config.WG_CLIENT_MTU}",
-            "",
-            "[Peer]",
-            f"PublicKey = {server_public_key}",
-            f"Endpoint = {server_endpoint_ip}:{server_listen_port}",
             f"AllowedIPs = {config.WG_CLIENT_ALLOWED_IPS}",
             f"PersistentKeepalive = {config.WG_KEEPALIVE_SECONDS}",
+            f"Endpoint = {server_endpoint_ip}:{server_listen_port}",
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 def allocate_next_ip(subnet: str, used_ips: set[str]) -> str:

@@ -99,7 +99,10 @@ class WireGuardService:
     def _render_conf(self, server_config: WireGuardServerConfig) -> str:
         peers = [
             wireguard_config.PeerForConfig(
-                name=p.name, public_key=p.public_key, allocated_ip=p.allocated_ip,
+                name=p.name,
+                public_key=p.public_key,
+                allocated_ip=p.allocated_ip,
+                preshared_key=p.preshared_key,
             )
             for p in self._repository.get_all_peers()
         ]
@@ -188,6 +191,7 @@ class WireGuardService:
         clients_dir = config.WG_CONFIG_DIR / "clients"
         clients_dir.mkdir(parents=True, exist_ok=True)
         for peer in self._repository.get_all_peers():
+            psk = peer.preshared_key or crypto_utils.generate_wireguard_preshared_key()
             new_conf = wireguard_config.render_client_config(
                 client_private_key=peer.private_key,
                 client_allocated_ip=peer.allocated_ip,
@@ -195,20 +199,24 @@ class WireGuardService:
                 server_endpoint_ip=server_config.endpoint_ip,
                 server_listen_port=server_config.listen_port,
                 dns=server_config.dns,
+                subnet=server_config.subnet,
+                preshared_key=psk,
             )
-            # Всегда пишем файл для диагностики/скачивания с диска.
             safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in peer.name)
             (clients_dir / f"{safe_name}.conf").write_text(new_conf, encoding="utf-8")
-            if new_conf == peer.config_text:
+            if new_conf == peer.config_text and psk == peer.preshared_key:
                 continue
-            self._repository.update_peer_config(peer.id, config_text=new_conf)
+            self._repository.update_peer_config(
+                peer.id, config_text=new_conf, preshared_key=psk,
+            )
             try:
                 utils.generate_qr_code(new_conf, peer.qr_filename)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Не удалось обновить QR WireGuard peer id=%d: %s", peer.id, exc)
             logger.info(
-                "Клиентский WG '%s': AllowedIPs=%s DNS=%s",
+                "Клиентский WG '%s': AllowedIPs=%s DNS=%s MTU=%s PSK=yes",
                 peer.name, config.WG_CLIENT_ALLOWED_IPS, server_config.dns,
+                config.WG_CLIENT_MTU,
             )
 
     def _rewrite_and_reload(self, server_config: WireGuardServerConfig) -> None:
@@ -231,6 +239,7 @@ class WireGuardService:
         used_ips = self._repository.get_used_ips()
         allocated_ip = wireguard_config.allocate_next_ip(server_config.subnet, used_ips)
         client_private_key, client_public_key = crypto_utils.generate_wireguard_keypair()
+        preshared_key = crypto_utils.generate_wireguard_preshared_key()
 
         client_conf_text = wireguard_config.render_client_config(
             client_private_key=client_private_key,
@@ -239,6 +248,8 @@ class WireGuardService:
             server_endpoint_ip=server_config.endpoint_ip,
             server_listen_port=server_config.listen_port,
             dns=server_config.dns,
+            subnet=server_config.subnet,
+            preshared_key=preshared_key,
         )
 
         qr_filename = f"wg_{cleaned_name}_{allocated_ip.replace('.', '_')}.png"
@@ -255,6 +266,7 @@ class WireGuardService:
                 allocated_ip=allocated_ip,
                 config_text=client_conf_text,
                 qr_filename=qr_filename,
+                preshared_key=preshared_key,
             )
         except AlreadyExistsError as exc:
             utils.delete_qr_code(qr_filename)
