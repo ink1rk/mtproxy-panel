@@ -6,11 +6,17 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 import docker
 from docker.errors import APIError, ImageNotFound, NotFound
 
 logger = logging.getLogger(__name__)
+
+# Первый pull linuxserver/wireguard на медленном канале легко занимает минуты.
+# Без таймаута форма в браузере «висит вечно».
+DEFAULT_IMAGE_PULL_TIMEOUT_SECONDS = 180.0
 
 
 def format_docker_api_error(exc: BaseException) -> str:
@@ -25,9 +31,14 @@ def format_docker_api_error(exc: BaseException) -> str:
     return " | ".join(parts) if parts else repr(exc)
 
 
-def ensure_image(client: docker.DockerClient, image: str) -> None:
+def ensure_image(
+    client: docker.DockerClient,
+    image: str,
+    *,
+    timeout_seconds: float = DEFAULT_IMAGE_PULL_TIMEOUT_SECONDS,
+) -> None:
     """
-    Гарантирует, что образ есть локально. Если нет — делает pull.
+    Гарантирует, что образ есть локально. Если нет — делает pull с таймаутом.
     Бросает RuntimeError с понятным текстом (для показа пользователю),
     а не сырой '500 Server Error for .../images/create'.
     """
@@ -38,12 +49,22 @@ def ensure_image(client: docker.DockerClient, image: str) -> None:
     except (ImageNotFound, NotFound):
         pass
 
-    logger.info("Скачиваю Docker-образ '%s'…", image)
-    try:
-        # stream+decode даёт прогресс в логах daemon'а; нам важен финальный
-        # результат и нормальный текст ошибки при обрыве registry.
+    logger.info("Скачиваю Docker-образ '%s' (таймаут %.0fс)…", image, timeout_seconds)
+
+    def _pull() -> None:
         client.images.pull(image)
-        client.images.get(image)  # подтверждаем, что pull реально положил тег
+        client.images.get(image)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_pull)
+            future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError as exc:
+        raise RuntimeError(
+            f"Скачивание Docker-образа '{image}' превысило {timeout_seconds:.0f}с. "
+            f"Страница из-за этого «зависает». На сервере выполните заранее: "
+            f"docker pull {image}  затем повторите настройку в панели."
+        ) from exc
     except APIError as exc:
         detail = format_docker_api_error(exc)
         raise RuntimeError(
