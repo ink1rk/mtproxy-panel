@@ -1,8 +1,5 @@
 """
 Генерация текстовых конфигов WireGuard: серверного wg0.conf и клиентских .conf.
-
-Чистые функции без побочных эффектов. NAT/firewall применяет FirewallManager
-(nftables) отдельно — PostUp в конфиге не используется (избегаем гонок с nft).
 """
 from __future__ import annotations
 
@@ -13,15 +10,12 @@ import config
 
 @dataclass(frozen=True, slots=True)
 class PeerForConfig:
-    """Минимальный набор полей peer-а для рендера серверного конфига."""
-
     name: str
     public_key: str
     allocated_ip: str
 
 
 def _subnet_base_and_prefix(subnet: str) -> tuple[str, str]:
-    """Разбирает '10.66.0.0/24' -> ('10.66.0', '24')."""
     network_part, _, prefix = subnet.partition("/")
     octets = network_part.split(".")
     if len(octets) != 4:
@@ -30,7 +24,6 @@ def _subnet_base_and_prefix(subnet: str) -> tuple[str, str]:
 
 
 def server_tunnel_address(subnet: str) -> str:
-    """Адрес сервера в туннеле — всегда '.1' указанной подсети."""
     base, _ = _subnet_base_and_prefix(subnet)
     return f"{base}.1"
 
@@ -43,18 +36,21 @@ def render_server_config(
     peers: list[PeerForConfig],
 ) -> str:
     """
-    Серверный /etc/wireguard/wg0.conf для native wg-quick@.
+    /etc/wireguard/wg0.conf для native wg-quick@.
 
-    NAT делает nftables (firewall_manager), не PostUp — так правила
-    переживают reload и не конфликтуют с Docker/iptables-nft.
+    PostUp вызывает mtproxy-wg-nat.sh (iptables MASQUERADE на WAN).
+    nftables masquerade не используется.
     """
     _, prefix = _subnet_base_and_prefix(subnet)
+    helper = config.WG_NAT_HELPER_PATH
     lines = [
         "[Interface]",
         f"PrivateKey = {server_private_key}",
         f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
         f"MTU = {config.WG_CLIENT_MTU}",
+        f"PostUp = {helper}",
+        f"PostDown = true",
         "",
     ]
     for peer in peers:
@@ -79,7 +75,12 @@ def render_client_config(
     server_listen_port: int,
     dns: str,
 ) -> str:
-    """Клиентский .conf для телефона/десктопа."""
+    """
+    Клиентский .conf.
+
+    Важно: только IPv4 в AllowedIPs. `::/0` без IPv6 NAT на сервере —
+    классический blackhole (handshake OK, сайты не грузятся).
+    """
     return "\n".join(
         [
             "[Interface]",
@@ -91,7 +92,7 @@ def render_client_config(
             "[Peer]",
             f"PublicKey = {server_public_key}",
             f"Endpoint = {server_endpoint_ip}:{server_listen_port}",
-            "AllowedIPs = 0.0.0.0/0, ::/0",
+            f"AllowedIPs = {config.WG_CLIENT_ALLOWED_IPS}",
             f"PersistentKeepalive = {config.WG_KEEPALIVE_SECONDS}",
             "",
         ]
@@ -99,7 +100,6 @@ def render_client_config(
 
 
 def allocate_next_ip(subnet: str, used_ips: set[str]) -> str:
-    """Следующий свободный IP в подсети (.1 — сервер, .0/.255 — служебные)."""
     network_part = subnet.split("/")[0]
     octets = network_part.split(".")
     if len(octets) != 4:

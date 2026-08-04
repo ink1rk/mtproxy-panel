@@ -1,10 +1,14 @@
 """
-Firewall/NAT для native VPN-стека.
+Маршрутизация VPN на хосте с Docker.
 
-Критично: на хосте с Docker filter FORWARD = DROP. nftables ACCEPT в нашей
-таблице НЕ отменяет поздний DROP Docker → handshake WG есть (1–3 KiB),
-интернета нет. Поэтому параллельно правим iptables DOCKER-USER / FORWARD
-и дублируем MASQUERADE в iptables nat.
+Единственная схема NAT для WireGuard (проверенный паттерн):
+  iptables -t nat -A POSTROUTING -s <subnet> -o <WAN> -j MASQUERADE
+  iptables -A FORWARD -i wg0 -j ACCEPT / -o wg0 -j ACCEPT
+  iptables -P FORWARD ACCEPT
+  DOCKER-USER ACCEPT для wg0
+
+nftables используется ТОЛЬКО для input (порты панели/WG/Xray).
+Masquerade в nft НЕ ставим — двойной NAT (nft+iptables) ломает return-path.
 """
 from __future__ import annotations
 
@@ -28,15 +32,27 @@ def _escape_iface(name: str) -> str:
     return name
 
 
-def _render_table(
+def detect_wan_interface() -> str:
+    """Интерфейс default-route (обычно eth0 / ens3)."""
+    result = host_exec.run(["ip", "-4", "route", "show", "default"], check=False)
+    for token in result.stdout.split():
+        # default via x.x.x.x dev eth0 ...
+        pass
+    parts = result.stdout.split()
+    if "dev" in parts:
+        idx = parts.index("dev")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return "eth0"
+
+
+def _render_input_table(
     *,
     wg_port: int | None,
     xray_port: int | None,
     panel_port: int,
-    wg_subnet: str | None,
-    wg_iface: str,
 ) -> str:
-    iface = _escape_iface(wg_iface)
+    """Только filter input — без NAT/forward masquerade."""
     lines = [
         f"table inet {config.NFT_TABLE_NAME} {{",
         "  chain input {",
@@ -47,34 +63,13 @@ def _render_table(
         lines.append(f"    udp dport {wg_port} accept comment \"wireguard\"")
     if xray_port is not None:
         lines.append(f"    tcp dport {xray_port} accept comment \"xray-vless\"")
-    lines.extend(
-        [
-            "  }",
-            "",
-            "  chain forward {",
-            "    type filter hook forward priority filter; policy accept;",
-            f"    iifname \"{iface}\" accept comment \"wg-forward-in\"",
-            f"    oifname \"{iface}\" accept comment \"wg-forward-out\"",
-            "  }",
-            "",
-            "  chain postrouting {",
-            "    type nat hook postrouting priority srcnat; policy accept;",
-        ]
-    )
-    if wg_subnet:
-        lines.append(
-            f"    ip saddr {wg_subnet} oifname != \"{iface}\" "
-            f"masquerade comment \"wg-nat\""
-        )
     lines.extend(["  }", "}"])
     return "\n".join(lines) + "\n"
 
 
 class FirewallManager:
-    """nftables + iptables(Docker) для рабочего WG NAT."""
-
     def __init__(self) -> None:
-        host_exec.require_binaries("nft")
+        host_exec.require_binaries("nft", "iptables", "ip")
 
     def ensure(
         self,
@@ -85,12 +80,8 @@ class FirewallManager:
         panel_port: int | None = None,
     ) -> None:
         panel = panel_port if panel_port is not None else config.APP_PORT
-        table = _render_table(
-            wg_port=wg_port,
-            xray_port=xray_port,
-            panel_port=panel,
-            wg_subnet=wg_subnet,
-            wg_iface=config.WG_INTERFACE_NAME,
+        table = _render_input_table(
+            wg_port=wg_port, xray_port=xray_port, panel_port=panel,
         )
         if self._table_exists():
             host_exec.run(
@@ -113,65 +104,73 @@ class FirewallManager:
         except host_exec.HostExecError as exc:
             logger.warning("Не удалось сохранить nftables ruleset: %s", exc)
 
-        # Docker FORWARD DROP — главная причина «handshake есть, интернета нет».
-        self._ensure_iptables_forward_and_nat(wg_subnet)
+        self.apply_wireguard_routing(wg_subnet)
 
         logger.info(
-            "firewall ready: wg_port=%s xray_port=%s subnet=%s",
-            wg_port, xray_port, wg_subnet,
+            "firewall ready: wan=%s wg_port=%s xray_port=%s subnet=%s",
+            detect_wan_interface(), wg_port, xray_port, wg_subnet,
         )
 
-    def _ensure_iptables_forward_and_nat(self, subnet: str | None) -> None:
-        iface = config.WG_INTERFACE_NAME
+    def apply_wireguard_routing(self, subnet: str | None) -> None:
+        """Чистая IPv4-маршрутизация WG → WAN. Идемпотентно."""
+        wan = _escape_iface(detect_wan_interface())
+        wg = _escape_iface(config.WG_INTERFACE_NAME)
         network_cidr = ""
         if subnet:
             network_cidr = subnet if "/" in subnet else f"{subnet}/24"
 
         script = f"""
-set -e
-IFACE="{iface}"
+set -euo pipefail
+WAN="{wan}"
+WG="{wg}"
 SUBNET="{network_cidr}"
-
-iptables -P FORWARD ACCEPT 2>/dev/null || true
-ip6tables -P FORWARD ACCEPT 2>/dev/null || true
-
-iptables -C FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i "$IFACE" -j ACCEPT
-iptables -C FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o "$IFACE" -j ACCEPT
-
-if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
-  iptables -C DOCKER-USER -i "$IFACE" -j ACCEPT 2>/dev/null \\
-    || iptables -I DOCKER-USER 1 -i "$IFACE" -j ACCEPT
-  iptables -C DOCKER-USER -o "$IFACE" -j ACCEPT 2>/dev/null \\
-    || iptables -I DOCKER-USER 1 -o "$IFACE" -j ACCEPT
-fi
-
-if [[ -n "$SUBNET" ]]; then
-  iptables -t nat -C POSTROUTING -s "$SUBNET" ! -o "$IFACE" -j MASQUERADE 2>/dev/null \\
-    || iptables -t nat -A POSTROUTING -s "$SUBNET" ! -o "$IFACE" -j MASQUERADE
-fi
-
-iptables -t mangle -C FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
-  || iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
-  || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.conf.all.src_valid_mark=1 >/dev/null 2>&1 || true
-for d in /proc/sys/net/ipv4/conf/*/rp_filter; do echo 2 > "$d" 2>/dev/null || true; done
+for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo 2 > "$f" 2>/dev/null || true; done
 
-echo "FORWARD=$(iptables -S FORWARD | head -5 | tr '\\n' ';')"
-echo "DOCKER_USER=$(iptables -S DOCKER-USER 2>/dev/null | head -10 | tr '\\n' ';' || echo none)"
+iptables -P FORWARD ACCEPT 2>/dev/null || true
+
+# Убираем старые наши правила (чтобы не копить дубликаты)
+while iptables -D FORWARD -i "$WG" -j ACCEPT 2>/dev/null; do :; done
+while iptables -D FORWARD -o "$WG" -j ACCEPT 2>/dev/null; do :; done
+iptables -I FORWARD 1 -i "$WG" -j ACCEPT
+iptables -I FORWARD 1 -o "$WG" -j ACCEPT
+
+if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+  while iptables -D DOCKER-USER -i "$WG" -j ACCEPT 2>/dev/null; do :; done
+  while iptables -D DOCKER-USER -o "$WG" -j ACCEPT 2>/dev/null; do :; done
+  iptables -I DOCKER-USER 1 -i "$WG" -j ACCEPT
+  iptables -I DOCKER-USER 1 -o "$WG" -j ACCEPT
+fi
+
+if [[ -n "$SUBNET" ]]; then
+  # Сносим ВСЕ старые MASQUERADE нашей подсети (в т.ч. ! -o wg0)
+  while iptables -t nat -D POSTROUTING -s "$SUBNET" ! -o "$WG" -j MASQUERADE 2>/dev/null; do :; done
+  while iptables -t nat -D POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE 2>/dev/null; do :; done
+  while iptables -t nat -D POSTROUTING -s "$SUBNET" -j MASQUERADE 2>/dev/null; do :; done
+  # Единственное правильное правило: SNAT только на WAN
+  iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE
+fi
+
+# MSS clamp
+while iptables -t mangle -D FORWARD -o "$WG" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do :; done
+while iptables -t mangle -D FORWARD -i "$WG" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do :; done
+iptables -t mangle -A FORWARD -o "$WG" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+iptables -t mangle -A FORWARD -i "$WG" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+echo "WAN=$WAN"
+echo "ROUTE_TEST=$(ip -4 route get 1.1.1.1 from 10.66.0.2 iif $WG 2>&1 | tr '\\n' ' ')"
+echo "FORWARD=$(iptables -S FORWARD | head -6 | tr '\\n' ';')"
 echo "NAT=$(iptables -t nat -S POSTROUTING | tr '\\n' ';')"
 """
         try:
-            result = host_exec.run(["bash", "-c", script], timeout=30.0)
-            logger.info("iptables bypass: %s", result.stdout.strip())
+            result = host_exec.run(["bash", "-c", script], timeout=45.0)
+            logger.info("WG routing applied: %s", result.stdout.strip())
         except host_exec.HostExecError as exc:
-            raise FirewallError(
-                f"Не удалось настроить iptables FORWARD/DOCKER-USER: {exc}"
-            ) from exc
+            raise FirewallError(f"Не удалось применить маршрутизацию WG: {exc}") from exc
 
         try:
             host_exec.write_root_file(
@@ -185,7 +184,46 @@ echo "NAT=$(iptables -t nat -S POSTROUTING | tr '\\n' ';')"
                 mode=0o644,
             )
         except host_exec.HostExecError as exc:
-            logger.warning("Не удалось записать sysctl persist: %s", exc)
+            logger.warning("sysctl persist: %s", exc)
+
+        # Хелпер для PostUp wg-quick и systemd after docker
+        self._install_nat_helper_script()
+
+    def _install_nat_helper_script(self) -> None:
+        wan = detect_wan_interface()
+        script = f"""#!/bin/bash
+# Auto-generated by mtproxy-panel — WireGuard NAT on WAN
+set -euo pipefail
+WAN="$(ip -4 route show default 2>/dev/null | awk '{{for(i=1;i<=NF;i++) if($i=="dev"){{print $(i+1); exit}}}}')"
+WAN="${{WAN:-{wan}}}"
+WG="{config.WG_INTERFACE_NAME}"
+SUBNET="{config.WG_DEFAULT_SUBNET}"
+# Подсеть из Address в wg0.conf, если есть
+if [[ -f /etc/wireguard/wg0.conf ]]; then
+  ADDR="$(awk -F'= *' '/^Address/{{print $2; exit}}' /etc/wireguard/wg0.conf | tr -d '[:space:]')"
+  if [[ -n "$ADDR" ]]; then
+    IP="${{ADDR%%/*}}"
+    PREF="${{ADDR##*/}}"
+    PREF="${{PREF:-24}}"
+    BASE="$(echo "$IP" | awk -F. '{{print $1"."$2"."$3".0"}}')"
+    SUBNET="${{BASE}}/${{PREF}}"
+  fi
+fi
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+iptables -P FORWARD ACCEPT 2>/dev/null || true
+iptables -C FORWARD -i "$WG" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i "$WG" -j ACCEPT
+iptables -C FORWARD -o "$WG" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o "$WG" -j ACCEPT
+if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+  iptables -C DOCKER-USER -i "$WG" -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -i "$WG" -j ACCEPT
+  iptables -C DOCKER-USER -o "$WG" -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -o "$WG" -j ACCEPT
+fi
+iptables -t nat -C POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE 2>/dev/null \\
+  || iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE
+"""
+        try:
+            host_exec.write_root_file(config.WG_NAT_HELPER_PATH, script, mode=0o755)
+        except host_exec.HostExecError as exc:
+            logger.warning("Не удалось установить NAT helper: %s", exc)
 
     def clear_wireguard(self) -> None:
         if self._table_exists():
@@ -204,14 +242,5 @@ echo "NAT=$(iptables -t nat -S POSTROUTING | tr '\\n' ';')"
     def ensure_ip_forward(self) -> None:
         try:
             host_exec.run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
-            host_exec.write_root_file(
-                config.SYSCTL_FORWARD_PATH,
-                (
-                    "net.ipv4.ip_forward=1\n"
-                    "net.ipv4.conf.all.rp_filter=2\n"
-                    "net.ipv4.conf.default.rp_filter=2\n"
-                ),
-                mode=0o644,
-            )
         except host_exec.HostExecError as exc:
             raise FirewallError(f"Не удалось включить ip_forward: {exc}") from exc

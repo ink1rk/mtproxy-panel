@@ -201,6 +201,10 @@ XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
 NFT_TABLE_NAME: str = "mtproxy-panel"
 NFT_RULES_PATH: str = "/etc/nftables.d/mtproxy-panel.nft"
 SYSCTL_FORWARD_PATH: str = "/etc/sysctl.d/99-mtproxy-panel-forward.conf"
+WG_NAT_HELPER_PATH: str = "/usr/local/sbin/mtproxy-wg-nat.sh"
+# Клиентам только IPv4. AllowedIPs с ::/0 на телефоне без IPv6-NAT =
+# «VPN подключён, сайты не открываются», transfer ~2 KiB.
+WG_CLIENT_ALLOWED_IPS: str = "0.0.0.0/0"
 
 # Ротация docker-логов только для MTProxy-контейнеров.
 DOCKER_LOG_CONFIG: dict = {

@@ -146,36 +146,30 @@ def _check_external_connectivity() -> CheckResult:
 
 
 def _check_wg_nat(subnet: str) -> CheckResult:
-    nft = host_exec.run(
-        ["nft", "list", "table", "inet", config.NFT_TABLE_NAME],
-        check=False,
-    )
+    from firewall_manager import detect_wan_interface
+
     ipt_nat = host_exec.run(["iptables", "-t", "nat", "-S", "POSTROUTING"], check=False)
     ipt_fwd = host_exec.run(["iptables", "-S", "FORWARD"], check=False)
-    docker_user = host_exec.run(["iptables", "-S", "DOCKER-USER"], check=False)
-
-    has_nft_masq = "masquerade" in nft.stdout.lower()
-    has_ipt_masq = "MASQUERADE" in ipt_nat.stdout and (
-        subnet.split("/")[0].rsplit(".", 1)[0] in ipt_nat.stdout or subnet in ipt_nat.stdout
+    route = host_exec.run(
+        ["ip", "-4", "route", "get", "1.1.1.1", "from", "10.66.0.2", "iif", config.WG_INTERFACE_NAME],
+        check=False,
     )
-    fwd_accepts_wg = (
-        f"-i {config.WG_INTERFACE_NAME}" in ipt_fwd.stdout
-        or f"-o {config.WG_INTERFACE_NAME}" in ipt_fwd.stdout
+    wan = detect_wan_interface()
+    subnet_base = subnet.split("/")[0].rsplit(".", 1)[0]
+    has_wan_masq = (
+        "MASQUERADE" in ipt_nat.stdout
+        and subnet_base in ipt_nat.stdout
+        and f"-o {wan}" in ipt_nat.stdout
     )
-    # Docker DROP без DOCKER-USER/FORWARD ACCEPT — классический fail.
-    docker_blocks = (
-        docker_user.ok
-        and config.WG_INTERFACE_NAME not in docker_user.stdout
-        and not fwd_accepts_wg
-        and "-P FORWARD DROP" in ipt_fwd.stdout
-    )
-
-    ok = (has_nft_masq or has_ipt_masq) and fwd_accepts_wg and not docker_blocks
+    # Старый опасный вариант ! -o wg0 без привязки к WAN — считаем слабее.
+    has_any_masq = "MASQUERADE" in ipt_nat.stdout and subnet_base in ipt_nat.stdout
+    fwd_ok = f"-i {config.WG_INTERFACE_NAME}" in ipt_fwd.stdout
+    route_ok = route.ok and wan in route.stdout
+    ok = (has_wan_masq or has_any_masq) and fwd_ok and route_ok
     detail = (
-        f"nft_masq={'yes' if has_nft_masq else 'no'} "
-        f"ipt_masq={'yes' if has_ipt_masq else 'no'} "
-        f"fwd_wg={'yes' if fwd_accepts_wg else 'NO'} "
-        f"docker_drop_risk={'YES' if docker_blocks else 'no'}"
+        f"wan={wan} masq={'wan' if has_wan_masq else ('any' if has_any_masq else 'NO')} "
+        f"fwd={'yes' if fwd_ok else 'NO'} "
+        f"route_get={'yes' if route_ok else 'NO'} ({route.stdout.strip()[:80]})"
     )
     return CheckResult(name="routing/nat", ok=ok, detail=detail)
 
