@@ -22,8 +22,16 @@ readonly HEALTHCHECK_URL="http://127.0.0.1:${APP_PORT}/"
 readonly HEALTHCHECK_TIMEOUT_SECONDS=30
 readonly PYTHON_MIN_MAJOR=3
 readonly PYTHON_MIN_MINOR=10
+# Верхняя «предпочтительная» минорная версия: для 3.14+ у многих пинов
+# из requirements ещё недавно не было готовых wheels, и pip пытался
+# собирать pillow/pydantic-core из исходников (падает без libjpeg/rust).
+# Предпочитаем 3.12/3.13; 3.14 допустим только если wheel'ы уже есть.
+readonly PYTHON_PREFERRED_MAX_MINOR=13
 readonly SYSTEMD_SERVICE_NAME="mtproxy-panel"
 readonly SYSTEMD_UNIT_FILE="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}.service"
+
+# Выбирается в ensure_python(); дальше venv создаётся именно им.
+PYTHON_BIN="python3"
 
 log() {
     printf '[install.sh] %s\n' "$1"
@@ -124,61 +132,86 @@ ensure_repo_up_to_date() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Установка Python, если отсутствует
+# 1. Установка / выбор подходящего Python
 # ---------------------------------------------------------------------------
-ensure_python() {
-    local need_install=0
+_python_version_of() {
+    # Печатает "major.minor" для переданного интерпретатора, либо пусто.
+    local bin="$1"
+    command -v "${bin}" >/dev/null 2>&1 || return 1
+    "${bin}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null
+}
 
-    if command -v python3 >/dev/null 2>&1; then
-        local version major minor
-        version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-        major="${version%%.*}"
-        minor="${version##*.}"
-        if (( major > PYTHON_MIN_MAJOR || (major == PYTHON_MIN_MAJOR && minor >= PYTHON_MIN_MINOR) )); then
-            log "Python ${version} уже установлен."
-        else
-            log "Найден Python ${version}, требуется >= ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}."
-            need_install=1
-        fi
-    else
-        log "Python3 не найден."
-        need_install=1
+_python_is_usable() {
+    # Принимаем 3.10 … 3.13 как предпочтительные; 3.14+ — только если
+    # вызывающий явно разрешил (после обновления deps с wheels).
+    local bin="$1"
+    local allow_bleeding="${2:-0}"
+    local version major minor
+    version="$(_python_version_of "${bin}")" || return 1
+    major="${version%%.*}"
+    minor="${version##*.}"
+    if (( major != PYTHON_MIN_MAJOR || minor < PYTHON_MIN_MINOR )); then
+        return 1
     fi
-
-    # На минимальных образах Ubuntu python3 может быть предустановлен,
-    # но пакет с модулем venv (python3-venv / python3.X-venv) — нет.
-    # Поэтому проверяем venv отдельно, независимо от версии Python.
-    if ! python3 -m venv --help >/dev/null 2>&1; then
-        log "Модуль 'venv' недоступен для текущего python3."
-        need_install=1
+    if (( minor > PYTHON_PREFERRED_MAX_MINOR )) && (( allow_bleeding == 0 )); then
+        return 1
     fi
+    "${bin}" -m venv --help >/dev/null 2>&1 || return 1
+    return 0
+}
 
-    if ! python3 -m pip --version >/dev/null 2>&1; then
-        log "Модуль 'pip' недоступен для текущего python3."
-        need_install=1
-    fi
-
-    if (( need_install == 0 )); then
-        return
-    fi
-
-    log "Устанавливаю python3, python3-venv, python3-pip."
+_install_preferred_python_packages() {
+    log "Устанавливаю Python 3.12 (предпочтительная версия для панели) и зависимости сборки."
     as_root apt-get update -y
+    # python3.12 есть в Ubuntu 22.04/24.04; на совсем свежих релизах, где
+    # дефолт уже 3.14, пакет python3.12 обычно всё ещё доступен из архива.
+    as_root apt-get install -y \
+        python3 \
+        python3-pip \
+        python3-venv \
+        python3.12 \
+        python3.12-venv \
+        python3.13 \
+        python3.13-venv \
+        libjpeg-dev \
+        zlib1g-dev \
+        2>/dev/null || as_root apt-get install -y \
+            python3 python3-pip python3-venv python3.12 python3.12-venv \
+            libjpeg-dev zlib1g-dev
+}
 
-    local py_minor_pkg="python3.$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo '')"
+ensure_python() {
+    # Порядок предпочтения: явные 3.12 → 3.13 → 3.11 → любой пригодный python3.
+    local candidate
+    for candidate in python3.12 python3.13 python3.11 python3; do
+        if _python_is_usable "${candidate}" 0; then
+            PYTHON_BIN="$(command -v "${candidate}")"
+            log "Использую ${PYTHON_BIN} ($(_python_version_of "${PYTHON_BIN}")) для venv."
+            return
+        fi
+    done
 
-    # Ставим и универсальные, и версионные пакеты (например python3.12-venv),
-    # т.к. на разных релизах Ubuntu имя пакета для venv отличается.
-    # apt-get install игнорирует не найденные версионные имена мягко только
-    # если явно допустить ошибку -- поэтому пробуем по отдельности.
-    as_root apt-get install -y python3 python3-venv python3-pip
-    if [[ -n "${py_minor_pkg}" && "${py_minor_pkg}" != "python3." ]]; then
-        as_root apt-get install -y "${py_minor_pkg}-venv" 2>/dev/null || true
-    fi
+    log "Подходящий Python ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}–${PYTHON_MIN_MAJOR}.${PYTHON_PREFERRED_MAX_MINOR} не найден (часто на новых Ubuntu python3 = 3.14, а для него у старых зависимостей нет wheels)."
+    _install_preferred_python_packages
 
-    if ! python3 -m venv --help >/dev/null 2>&1; then
-        fail "Не удалось установить рабочий модуль venv для python3. Установите вручную: apt install python3-venv (или python3.X-venv) и запустите install.sh снова."
-    fi
+    for candidate in python3.12 python3.13 python3.11 python3; do
+        if _python_is_usable "${candidate}" 0; then
+            PYTHON_BIN="$(command -v "${candidate}")"
+            log "Использую ${PYTHON_BIN} ($(_python_version_of "${PYTHON_BIN}")) для venv."
+            return
+        fi
+    done
+
+    # Последний шанс: разрешить 3.14+, если обновлённые deps уже дают wheels.
+    for candidate in python3 python3.14; do
+        if _python_is_usable "${candidate}" 1; then
+            PYTHON_BIN="$(command -v "${candidate}")"
+            log "ВНИМАНИЕ: использую ${PYTHON_BIN} ($(_python_version_of "${PYTHON_BIN}")) — это новее предпочтительного диапазона. Если pip снова упадёт на сборке wheels, установите python3.12 вручную."
+            return
+        fi
+    done
+
+    fail "Не удалось найти/установить пригодный Python (>= ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR}). Установите вручную: apt install python3.12 python3.12-venv && bash install.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -241,16 +274,49 @@ ensure_project_structure() {
 # 4. Виртуальное окружение и зависимости
 # ---------------------------------------------------------------------------
 ensure_venv() {
-    if [[ ! -d "${VENV_DIR}" ]]; then
-        log "Создаю виртуальное окружение."
-        python3 -m venv "${VENV_DIR}"
+    local recreate=0
+    local venv_version
+
+    if [[ -d "${VENV_DIR}" && -x "${VENV_DIR}/bin/python" ]]; then
+        venv_version="$(_python_version_of "${VENV_DIR}/bin/python" || echo "")"
+        local wanted_version
+        wanted_version="$(_python_version_of "${PYTHON_BIN}")"
+        if [[ -z "${venv_version}" || "${venv_version}" != "${wanted_version}" ]]; then
+            log "Существующий venv на Python ${venv_version:-?} не совпадает с ${PYTHON_BIN} (${wanted_version}) — пересоздаю."
+            recreate=1
+        else
+            # Старый venv мог быть создан на 3.14 и остаться полусломанным
+            # после падения pip: пересоздаём, если мажор/минор > предпочтительного.
+            local major="${venv_version%%.*}"
+            local minor="${venv_version##*.}"
+            if (( major == PYTHON_MIN_MAJOR && minor > PYTHON_PREFERRED_MAX_MINOR )); then
+                # Разрешаем оставить 3.14-venv только если зависимости уже стоят.
+                if ! "${VENV_DIR}/bin/python" -c "import fastapi, pydantic, PIL, docker" >/dev/null 2>&1; then
+                    log "Venv на Python ${venv_version} без установленных зависимостей — пересоздаю."
+                    recreate=1
+                fi
+            fi
+        fi
     else
-        log "Виртуальное окружение уже существует."
+        recreate=1
+    fi
+
+    if (( recreate == 1 )); then
+        if [[ -d "${VENV_DIR}" ]]; then
+            log "Удаляю старое виртуальное окружение."
+            rm -rf "${VENV_DIR}"
+        fi
+        log "Создаю виртуальное окружение через ${PYTHON_BIN}."
+        "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+    else
+        log "Виртуальное окружение уже существует (Python ${venv_version})."
     fi
 
     log "Устанавливаю зависимости из requirements.txt."
     "${VENV_DIR}/bin/pip" install --upgrade pip --quiet
-    "${VENV_DIR}/bin/pip" install -r "${SCRIPT_DIR}/requirements.txt" --quiet
+    if ! "${VENV_DIR}/bin/pip" install -r "${SCRIPT_DIR}/requirements.txt"; then
+        fail "Не удалось установить Python-зависимости. Частая причина — слишком новый Python без готовых wheels. Установите python3.12 и повторите: apt install -y python3.12 python3.12-venv && rm -rf venv && bash install.sh"
+    fi
 }
 
 # ---------------------------------------------------------------------------
