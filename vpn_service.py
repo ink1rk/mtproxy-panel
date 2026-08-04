@@ -126,6 +126,7 @@ class WireGuardService:
         try:
             self._manager.ensure_server_running(listen_port)
             self._manager.wait_until_interface_ready()
+            self._manager.ensure_nat_rules(subnet)
         except WireGuardDockerError as exc:
             try:
                 self._manager.remove_server()
@@ -159,26 +160,44 @@ class WireGuardService:
             was_running = self._manager.is_running()
             self._write_server_conf(server_config)
             new_conf = conf_path.read_text(encoding="utf-8")
+            self._refresh_peer_client_configs(server_config)
             self._manager.ensure_server_running(server_config.listen_port)
             self._manager.wait_until_interface_ready()
-            if not was_running:
-                return
-            # syncconf НЕ выполняет PostUp/PostDown. Если поменялись NAT-правила
-            # (например, уход с жёсткого eth0) — нужен полный рестарт, иначе
-            # handshake есть, а интернета через туннель нет.
-            needs_full_restart = (
-                ("-o eth0 -j MASQUERADE" in old_conf and "-o eth0 -j MASQUERADE" not in new_conf)
-                or ("PostUp" in new_conf and "PostUp" in old_conf and old_conf != new_conf
-                    and "MASQUERADE" in new_conf and "MASQUERADE" not in old_conf)
+            # syncconf НЕ выполняет PostUp. При смене NAT — полный рестарт.
+            needs_full_restart = was_running and (
+                old_conf != new_conf
+                or "-o eth0 -j MASQUERADE" in old_conf
             )
             if needs_full_restart:
-                logger.info("Конфиг WireGuard изменил NAT/PostUp — полный рестарт контейнера")
+                logger.info("Конфиг WireGuard изменился — полный рестарт контейнера для применения NAT")
                 self._manager.restart_server()
                 self._manager.wait_until_interface_ready()
-            else:
+            elif was_running:
                 self._manager.reload_config()
+            # Всегда дожимаем NAT/forwarding (idempotent) — чинит «handshake есть, интернета нет».
+            self._manager.ensure_nat_rules(server_config.subnet)
         except WireGuardDockerError as exc:
             logger.error("Не удалось поднять WireGuard-сервер при старте: %s", exc)
+
+    def _refresh_peer_client_configs(self, server_config: WireGuardServerConfig) -> None:
+        """Пересобирает .conf/QR пиров (MTU/endpoint), чтобы телефон получил актуальный профиль."""
+        for peer in self._repository.get_all_peers():
+            new_conf = wireguard_config.render_client_config(
+                client_private_key=peer.private_key,
+                client_allocated_ip=peer.allocated_ip,
+                server_public_key=server_config.server_public_key,
+                server_endpoint_ip=server_config.endpoint_ip,
+                server_listen_port=server_config.listen_port,
+                dns=server_config.dns,
+            )
+            if new_conf == peer.config_text:
+                continue
+            self._repository.update_peer_config(peer.id, config_text=new_conf)
+            try:
+                utils.generate_qr_code(new_conf, peer.qr_filename)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Не удалось обновить QR WireGuard peer id=%d: %s", peer.id, exc)
+            logger.info("Обновлён клиентский конфиг WireGuard peer '%s' (MTU/endpoint)", peer.name)
 
     def _write_server_conf(self, server_config: WireGuardServerConfig) -> None:
         self._manager.ensure_host_config_writable()
@@ -201,6 +220,7 @@ class WireGuardService:
         self._write_server_conf(server_config)
         self._manager.wait_until_interface_ready()
         self._manager.reload_config()
+        self._manager.ensure_nat_rules(server_config.subnet)
 
     def add_peer(self, name: str) -> WireGuardPeer:
         server_config = self._repository.get_server_config()
@@ -277,6 +297,7 @@ class WireGuardService:
             self._write_server_conf(server_config)
             self._manager.restart_server()
             self._manager.wait_until_interface_ready()
+            self._manager.ensure_nat_rules(server_config.subnet)
         except WireGuardDockerError as exc:
             raise VpnServiceError(str(exc)) from exc
 

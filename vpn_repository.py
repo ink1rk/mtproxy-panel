@@ -152,6 +152,21 @@ class WireGuardRepository:
             connection.execute(f"DELETE FROM {config.WG_PEERS_TABLE_NAME} WHERE id = ?", (peer_id,))
         return peer
 
+    def update_peer_config(self, peer_id: int, *, config_text: str, qr_filename: str | None = None) -> None:
+        """Обновляет клиентский .conf (и опционально имя QR) после смены MTU/endpoint."""
+        if qr_filename is None:
+            with get_connection() as connection:
+                connection.execute(
+                    f"UPDATE {config.WG_PEERS_TABLE_NAME} SET config_text = ? WHERE id = ?",
+                    (config_text, peer_id),
+                )
+            return
+        with get_connection() as connection:
+            connection.execute(
+                f"UPDATE {config.WG_PEERS_TABLE_NAME} SET config_text = ?, qr_filename = ? WHERE id = ?",
+                (config_text, qr_filename, peer_id),
+            )
+
     def delete_all_peers(self) -> None:
         with get_connection() as connection:
             connection.execute(f"DELETE FROM {config.WG_PEERS_TABLE_NAME}")

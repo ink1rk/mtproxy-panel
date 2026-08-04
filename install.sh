@@ -602,6 +602,13 @@ ensure_wireguard_kernel_support() {
             "изначально) — контейнер WireGuard-сервера попробует загрузить модуль сам " \
             "при первом запуске из панели."
     fi
+    # Без ip_forward на ХОСТЕ Docker иногда не пропускает форвард из контейнера WG.
+    if as_root sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; then
+        log "Включён net.ipv4.ip_forward=1 на хосте."
+    fi
+    if [[ -d /etc/sysctl.d ]]; then
+        printf 'net.ipv4.ip_forward=1\n' | as_root tee /etc/sysctl.d/99-mtproxy-panel-forward.conf >/dev/null || true
+    fi
 }
 
 # ---------------------------------------------------------------------------

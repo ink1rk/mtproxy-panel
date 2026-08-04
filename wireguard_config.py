@@ -58,26 +58,33 @@ def render_server_config(
     Строит содержимое server-side wg0.conf: один [Interface] и по одному
     [Peer] блоку на каждого зарегистрированного клиента.
 
-    PostUp/PostDown добавляют NAT (MASQUERADE) для трафика из туннеля наружу.
-    ВАЖНО: не привязываемся к имени интерфейса eth0 — в Docker bridge это
-    обычно eth0, но на части хостов/сетей контейнер видит другой default
-    iface, и тогда handshake проходит, а интернет через VPN «не открывается».
-    Маскарадим весь трафик из VPN-подсети, который уходит НЕ в wg0.
+    PostUp/PostDown включают forwarding и NAT для трафика из туннеля.
+    MASQUERADE вешаем на source VPN-подсети без привязки к eth0/ens*:
+    иначе типичный симптом — handshake есть (1–3 KiB transfer), а сайты
+    на телефоне не открываются.
     """
     _, prefix = _subnet_base_and_prefix(subnet)
-    # source CIDR совпадает с Address/подсетью сервера (например 10.66.0.0/24)
     network_cidr = subnet if "/" in subnet else f"{subnet}/{prefix}"
+    post_up = (
+        "sysctl -w net.ipv4.ip_forward=1; "
+        "iptables -P FORWARD ACCEPT; "
+        "iptables -A FORWARD -i wg0 -j ACCEPT; "
+        "iptables -A FORWARD -o wg0 -j ACCEPT; "
+        f"iptables -t nat -C POSTROUTING -s {network_cidr} -j MASQUERADE 2>/dev/null || "
+        f"iptables -t nat -A POSTROUTING -s {network_cidr} -j MASQUERADE"
+    )
+    post_down = (
+        "iptables -D FORWARD -i wg0 -j ACCEPT; "
+        "iptables -D FORWARD -o wg0 -j ACCEPT; "
+        f"iptables -t nat -D POSTROUTING -s {network_cidr} -j MASQUERADE"
+    )
     lines = [
         "[Interface]",
         f"PrivateKey = {server_private_key}",
         f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
-        "PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; "
-        "iptables -A FORWARD -o wg0 -j ACCEPT; "
-        f"iptables -t nat -A POSTROUTING -s {network_cidr} ! -o wg0 -j MASQUERADE",
-        "PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; "
-        "iptables -D FORWARD -o wg0 -j ACCEPT; "
-        f"iptables -t nat -D POSTROUTING -s {network_cidr} ! -o wg0 -j MASQUERADE",
+        f"PostUp = {post_up}",
+        f"PostDown = {post_down}",
         "",
     ]
     for peer in peers:
@@ -109,6 +116,7 @@ def render_client_config(
             f"PrivateKey = {client_private_key}",
             f"Address = {client_allocated_ip}/32",
             f"DNS = {dns}",
+            f"MTU = {config.WG_CLIENT_MTU}",
             "",
             "[Peer]",
             f"PublicKey = {server_public_key}",

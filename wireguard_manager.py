@@ -283,6 +283,38 @@ class WireGuardManager:
             f"Интерфейс {config.WG_INTERFACE_NAME} не поднялся внутри контейнера за {timeout:.0f}с"
         )
 
+    def ensure_nat_rules(self, subnet: str) -> None:
+        """
+        Гарантирует ip_forward + MASQUERADE для VPN-подсети внутри контейнера.
+        PostUp из wg-quick иногда не срабатывает/срабатывает со старым eth0 —
+        тогда handshake есть (килобайты transfer), а интернет на телефоне нет.
+        Идемпотентно: `-C` проверяет правило перед `-A`.
+        """
+        container = self._get_container()
+        if container is None:
+            raise WireGuardDockerError("Контейнер WireGuard не найден — сервер ещё не настроен")
+
+        network_cidr = subnet if "/" in subnet else f"{subnet}/24"
+        script = f"""
+set -e
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+iptables -P FORWARD ACCEPT
+iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT
+iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o wg0 -j ACCEPT
+# Убираем устаревший MASQUERADE -o eth0, если остался от старых конфигов
+iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || true
+iptables -t nat -C POSTROUTING -s {network_cidr} -j MASQUERADE 2>/dev/null \\
+  || iptables -t nat -A POSTROUTING -s {network_cidr} -j MASQUERADE
+iptables -t nat -S POSTROUTING
+"""
+        exit_code, output = container.exec_run(["bash", "-c", script])
+        text = output.decode("utf-8", "replace")
+        if exit_code != 0:
+            raise WireGuardDockerError(
+                f"Не удалось применить NAT/forwarding внутри WireGuard-контейнера: {text}"
+            )
+        logger.info("NAT/forwarding WireGuard применены: %s", text.strip().replace("\n", " | "))
+
     def restart_server(self) -> None:
         """Перезапускает контейнер WireGuard-сервера, не трогая конфигурацию/peer-ов."""
         container = self._get_container()
