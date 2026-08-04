@@ -166,6 +166,11 @@ class WireGuardService:
         )
 
     def ensure_running_if_configured(self) -> None:
+        # Когда на хосте крутится отдельный wg-easy — не трогаем :51820.
+        import os
+        if os.environ.get("MTPROXY_DISABLE_WG") == "1":
+            logger.info("WG auto-start disabled (MTPROXY_DISABLE_WG=1)")
+            return
         server_config = self._repository.get_server_config()
         if server_config is None:
             return
