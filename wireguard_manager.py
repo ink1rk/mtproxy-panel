@@ -286,13 +286,28 @@ class WireGuardManager:
             f"{container.logs(tail=30).decode('utf-8', 'replace')}"
         )
 
+    def _resolve_wan_iface(self, container: Container) -> str:
+        wan = config.WG_DOCKER_WAN_IFACE
+        code, _ = container.exec_run(["ip", "link", "show", "dev", wan])
+        if code == 0:
+            return wan
+        # fallback: default route
+        code, out = container.exec_run(
+            ["bash", "-c", "ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i==\"dev\"){print $(i+1); exit}}'"]
+        )
+        detected = out.decode("utf-8", "replace").strip() if code == 0 else ""
+        if detected:
+            logger.warning("WAN %s нет, использую %s", wan, detected)
+            return detected
+        return wan
+
     def _ensure_nat_inside(self, subnet: str) -> None:
         """Дожимает NAT (как WG_POST_UP у wg-easy) на WAN-интерфейсе."""
         container = self._get_container()
         if container is None:
             return
         network_cidr = subnet if "/" in subnet else f"{subnet}/24"
-        wan = config.WG_DOCKER_WAN_IFACE
+        wan = self._resolve_wan_iface(container)
         script = f"""
 set -e
 iptables -P FORWARD ACCEPT 2>/dev/null || true
