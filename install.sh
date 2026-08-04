@@ -609,6 +609,40 @@ EOF
         printf '%s\n' "${rules}" | as_root tee /etc/nftables.d/mtproxy-panel.nft >/dev/null
         log "nftables таблица mtproxy-panel применена."
     fi
+
+    # Docker ставит FORWARD DROP — сразу ставим ACCEPT для wg0.
+    install_wg_forward_helper
+    as_root bash "${SCRIPT_DIR}/tools/fix_wg_forward.sh" || true
+}
+
+install_wg_forward_helper() {
+    # После рестарта Docker DOCKER-USER очищается — поднимаем правила снова.
+    local unit_path="/etc/systemd/system/mtproxy-wg-forward.service"
+    local unit_content
+    unit_content="$(cat <<EOF
+[Unit]
+Description=Allow WireGuard forwarding past Docker iptables DROP
+After=network-online.target docker.service nftables.service
+Wants=network-online.target
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${SCRIPT_DIR}/tools/fix_wg_forward.sh
+ExecStartPost=/bin/true
+
+[Install]
+WantedBy=multi-user.target docker.service
+EOF
+)"
+    if has_systemd; then
+        printf '%s\n' "${unit_content}" | as_root tee "${unit_path}" >/dev/null
+        as_root systemctl daemon-reload
+        as_root systemctl enable mtproxy-wg-forward.service >/dev/null 2>&1 || true
+        as_root systemctl start mtproxy-wg-forward.service >/dev/null 2>&1 || true
+        log "Установлен systemd helper mtproxy-wg-forward.service (Docker FORWARD bypass)."
+    fi
 }
 
 verify_vpn_binaries() {

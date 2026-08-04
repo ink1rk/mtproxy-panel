@@ -146,20 +146,38 @@ def _check_external_connectivity() -> CheckResult:
 
 
 def _check_wg_nat(subnet: str) -> CheckResult:
-    result = host_exec.run(
+    nft = host_exec.run(
         ["nft", "list", "table", "inet", config.NFT_TABLE_NAME],
         check=False,
     )
-    text = result.stdout
-    has_masq = "masquerade" in text and subnet.split("/")[0].rsplit(".", 1)[0] in text
-    # Более мягко: любое masquerade в нашей таблице
-    if "masquerade" in text:
-        has_masq = True
-    return CheckResult(
-        name="routing/nat",
-        ok=result.ok and has_masq,
-        detail="nftables masquerade OK" if has_masq else f"нет masquerade в {config.NFT_TABLE_NAME}",
+    ipt_nat = host_exec.run(["iptables", "-t", "nat", "-S", "POSTROUTING"], check=False)
+    ipt_fwd = host_exec.run(["iptables", "-S", "FORWARD"], check=False)
+    docker_user = host_exec.run(["iptables", "-S", "DOCKER-USER"], check=False)
+
+    has_nft_masq = "masquerade" in nft.stdout.lower()
+    has_ipt_masq = "MASQUERADE" in ipt_nat.stdout and (
+        subnet.split("/")[0].rsplit(".", 1)[0] in ipt_nat.stdout or subnet in ipt_nat.stdout
     )
+    fwd_accepts_wg = (
+        f"-i {config.WG_INTERFACE_NAME}" in ipt_fwd.stdout
+        or f"-o {config.WG_INTERFACE_NAME}" in ipt_fwd.stdout
+    )
+    # Docker DROP без DOCKER-USER/FORWARD ACCEPT — классический fail.
+    docker_blocks = (
+        docker_user.ok
+        and config.WG_INTERFACE_NAME not in docker_user.stdout
+        and not fwd_accepts_wg
+        and "-P FORWARD DROP" in ipt_fwd.stdout
+    )
+
+    ok = (has_nft_masq or has_ipt_masq) and fwd_accepts_wg and not docker_blocks
+    detail = (
+        f"nft_masq={'yes' if has_nft_masq else 'no'} "
+        f"ipt_masq={'yes' if has_ipt_masq else 'no'} "
+        f"fwd_wg={'yes' if fwd_accepts_wg else 'NO'} "
+        f"docker_drop_risk={'YES' if docker_blocks else 'no'}"
+    )
+    return CheckResult(name="routing/nat", ok=ok, detail=detail)
 
 
 def check_wireguard(*, listen_port: int, subnet: str) -> HealthReport:

@@ -1,12 +1,10 @@
 """
-nftables firewall для native VPN-стека панели.
+Firewall/NAT для native VPN-стека.
 
-Одна таблица `inet mtproxy-panel`:
-- input: accept UDP WireGuard / TCP VLESS / TCP панели
-- forward: accept трафик wg0
-- postrouting: masquerade VPN-подсети (кроме выхода в wg0)
-
-Идемпотентно: таблица пересоздаётся целиком при каждом ensure.
+Критично: на хосте с Docker filter FORWARD = DROP. nftables ACCEPT в нашей
+таблице НЕ отменяет поздний DROP Docker → handshake WG есть (1–3 KiB),
+интернета нет. Поэтому параллельно правим iptables DOCKER-USER / FORWARD
+и дублируем MASQUERADE в iptables nat.
 """
 from __future__ import annotations
 
@@ -21,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class FirewallError(RuntimeError):
-    """Ошибка применения nftables-правил."""
+    """Ошибка применения firewall/NAT."""
 
 
 def _escape_iface(name: str) -> str:
@@ -73,7 +71,7 @@ def _render_table(
 
 
 class FirewallManager:
-    """Управляет таблицей nftables панели."""
+    """nftables + iptables(Docker) для рабочего WG NAT."""
 
     def __init__(self) -> None:
         host_exec.require_binaries("nft")
@@ -86,7 +84,6 @@ class FirewallManager:
         wg_subnet: str | None = None,
         panel_port: int | None = None,
     ) -> None:
-        """Применяет актуальную таблицу firewall/NAT."""
         panel = panel_port if panel_port is not None else config.APP_PORT
         table = _render_table(
             wg_port=wg_port,
@@ -95,8 +92,6 @@ class FirewallManager:
             wg_subnet=wg_subnet,
             wg_iface=config.WG_INTERFACE_NAME,
         )
-        # delete+recreate: flush оставляет пустую таблицу, а повторный
-        # `table inet ... {` падает с "File exists".
         if self._table_exists():
             host_exec.run(
                 ["nft", "delete", "table", "inet", config.NFT_TABLE_NAME],
@@ -113,20 +108,86 @@ class FirewallManager:
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
-        # Persist for reboot (best-effort).
         try:
             host_exec.write_root_file(config.NFT_RULES_PATH, table, mode=0o644)
         except host_exec.HostExecError as exc:
             logger.warning("Не удалось сохранить nftables ruleset: %s", exc)
 
+        # Docker FORWARD DROP — главная причина «handshake есть, интернета нет».
+        self._ensure_iptables_forward_and_nat(wg_subnet)
+
         logger.info(
-            "nftables %s: wg_port=%s xray_port=%s subnet=%s",
-            config.NFT_TABLE_NAME, wg_port, xray_port, wg_subnet,
+            "firewall ready: wg_port=%s xray_port=%s subnet=%s",
+            wg_port, xray_port, wg_subnet,
         )
 
+    def _ensure_iptables_forward_and_nat(self, subnet: str | None) -> None:
+        iface = config.WG_INTERFACE_NAME
+        network_cidr = ""
+        if subnet:
+            network_cidr = subnet if "/" in subnet else f"{subnet}/24"
+
+        script = f"""
+set -e
+IFACE="{iface}"
+SUBNET="{network_cidr}"
+
+iptables -P FORWARD ACCEPT 2>/dev/null || true
+ip6tables -P FORWARD ACCEPT 2>/dev/null || true
+
+iptables -C FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i "$IFACE" -j ACCEPT
+iptables -C FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o "$IFACE" -j ACCEPT
+
+if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+  iptables -C DOCKER-USER -i "$IFACE" -j ACCEPT 2>/dev/null \\
+    || iptables -I DOCKER-USER 1 -i "$IFACE" -j ACCEPT
+  iptables -C DOCKER-USER -o "$IFACE" -j ACCEPT 2>/dev/null \\
+    || iptables -I DOCKER-USER 1 -o "$IFACE" -j ACCEPT
+fi
+
+if [[ -n "$SUBNET" ]]; then
+  iptables -t nat -C POSTROUTING -s "$SUBNET" ! -o "$IFACE" -j MASQUERADE 2>/dev/null \\
+    || iptables -t nat -A POSTROUTING -s "$SUBNET" ! -o "$IFACE" -j MASQUERADE
+fi
+
+iptables -t mangle -C FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
+  || iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
+  || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf.all.src_valid_mark=1 >/dev/null 2>&1 || true
+for d in /proc/sys/net/ipv4/conf/*/rp_filter; do echo 2 > "$d" 2>/dev/null || true; done
+
+echo "FORWARD=$(iptables -S FORWARD | head -5 | tr '\\n' ';')"
+echo "DOCKER_USER=$(iptables -S DOCKER-USER 2>/dev/null | head -10 | tr '\\n' ';' || echo none)"
+echo "NAT=$(iptables -t nat -S POSTROUTING | tr '\\n' ';')"
+"""
+        try:
+            result = host_exec.run(["bash", "-c", script], timeout=30.0)
+            logger.info("iptables bypass: %s", result.stdout.strip())
+        except host_exec.HostExecError as exc:
+            raise FirewallError(
+                f"Не удалось настроить iptables FORWARD/DOCKER-USER: {exc}"
+            ) from exc
+
+        try:
+            host_exec.write_root_file(
+                config.SYSCTL_FORWARD_PATH,
+                (
+                    "net.ipv4.ip_forward=1\n"
+                    "net.ipv4.conf.all.rp_filter=2\n"
+                    "net.ipv4.conf.default.rp_filter=2\n"
+                    "net.ipv4.conf.all.src_valid_mark=1\n"
+                ),
+                mode=0o644,
+            )
+        except host_exec.HostExecError as exc:
+            logger.warning("Не удалось записать sysctl persist: %s", exc)
+
     def clear_wireguard(self) -> None:
-        """Убирает WG-правила, оставляя панель/Xray если есть."""
-        # Полный flush таблицы — вызывающий код затем ensure() с актуальными портами.
         if self._table_exists():
             host_exec.run(
                 ["nft", "delete", "table", "inet", config.NFT_TABLE_NAME],
@@ -145,7 +206,11 @@ class FirewallManager:
             host_exec.run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
             host_exec.write_root_file(
                 config.SYSCTL_FORWARD_PATH,
-                "net.ipv4.ip_forward=1\n",
+                (
+                    "net.ipv4.ip_forward=1\n"
+                    "net.ipv4.conf.all.rp_filter=2\n"
+                    "net.ipv4.conf.default.rp_filter=2\n"
+                ),
                 mode=0o644,
             )
         except host_exec.HostExecError as exc:

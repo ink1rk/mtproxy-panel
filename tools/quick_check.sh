@@ -40,9 +40,15 @@ else
 fi
 
 echo
-echo "=== 6. nftables NAT ==="
+echo "=== 6. nftables + iptables (Docker FORWARD) ==="
 nft list table inet mtproxy-panel 2>/dev/null || echo "таблицы mtproxy-panel нет"
 echo "ip_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo '?')"
+echo "--- iptables FORWARD (Docker DROP ломает WG) ---"
+iptables -S FORWARD 2>/dev/null | head -12 || true
+echo "--- DOCKER-USER ---"
+iptables -S DOCKER-USER 2>/dev/null | head -12 || echo "(нет)"
+echo "--- iptables NAT ---"
+iptables -t nat -S POSTROUTING 2>/dev/null || true
 ip -4 route show default || true
 
 echo
