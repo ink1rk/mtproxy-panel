@@ -183,6 +183,8 @@ class WireGuardService:
             logger.error("Не удалось поднять WireGuard при старте: %s", exc)
 
     def _refresh_peer_client_configs(self, server_config: WireGuardServerConfig) -> None:
+        clients_dir = config.WG_CONFIG_DIR / "clients"
+        clients_dir.mkdir(parents=True, exist_ok=True)
         for peer in self._repository.get_all_peers():
             new_conf = wireguard_config.render_client_config(
                 client_private_key=peer.private_key,
@@ -192,6 +194,9 @@ class WireGuardService:
                 server_listen_port=server_config.listen_port,
                 dns=server_config.dns,
             )
+            # Всегда пишем файл для диагностики/скачивания с диска.
+            safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in peer.name)
+            (clients_dir / f"{safe_name}.conf").write_text(new_conf, encoding="utf-8")
             if new_conf == peer.config_text:
                 continue
             self._repository.update_peer_config(peer.id, config_text=new_conf)
@@ -199,6 +204,10 @@ class WireGuardService:
                 utils.generate_qr_code(new_conf, peer.qr_filename)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Не удалось обновить QR WireGuard peer id=%d: %s", peer.id, exc)
+            logger.info(
+                "Клиентский WG '%s': AllowedIPs=%s DNS=%s",
+                peer.name, config.WG_CLIENT_ALLOWED_IPS, server_config.dns,
+            )
 
     def _rewrite_and_reload(self, server_config: WireGuardServerConfig) -> None:
         conf_text = self._render_conf(server_config)

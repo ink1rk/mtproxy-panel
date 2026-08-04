@@ -1,5 +1,8 @@
 """
 Генерация текстовых конфигов WireGuard: серверного wg0.conf и клиентских .conf.
+
+NAT НЕ в PostUp: внешний скрипт ломал wg-quick (Permission denied → rollback).
+Маршрутизацию применяет firewall_manager после поднятия интерфейса.
 """
 from __future__ import annotations
 
@@ -38,19 +41,16 @@ def render_server_config(
     """
     /etc/wireguard/wg0.conf для native wg-quick@.
 
-    PostUp вызывает mtproxy-wg-nat.sh (iptables MASQUERADE на WAN).
-    nftables masquerade не используется.
+    Без PostUp/PostDown — только Interface + Peers. Иначе падение PostUp
+    откатывает весь wg0 (ip link delete). NAT делает FirewallManager.
     """
     _, prefix = _subnet_base_and_prefix(subnet)
-    helper = config.WG_NAT_HELPER_PATH
     lines = [
         "[Interface]",
         f"PrivateKey = {server_private_key}",
         f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
         f"MTU = {config.WG_CLIENT_MTU}",
-        f"PostUp = {helper}",
-        f"PostDown = true",
         "",
     ]
     for peer in peers:
@@ -76,10 +76,10 @@ def render_client_config(
     dns: str,
 ) -> str:
     """
-    Клиентский .conf.
+    Клиентский .conf для iOS/Android WireGuard.
 
-    Важно: только IPv4 в AllowedIPs. `::/0` без IPv6 NAT на сервере —
-    классический blackhole (handshake OK, сайты не грузятся).
+    AllowedIPs = 0.0.0.0/0 (весь IPv4 через VPN).
+    Без ::/0 — на сервере нет IPv6 NAT, иначе blackhole на iPhone.
     """
     return "\n".join(
         [

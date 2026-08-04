@@ -73,21 +73,18 @@ class WireGuardManager:
         subnet: str,
         xray_port: int | None = None,
     ) -> None:
-        """Пишет конфиг, поднимает wg-quick@wg0, применяет nftables NAT."""
+        """Пишет конфиг без PostUp, поднимает wg-quick@wg0, затем применяет NAT."""
+        # Убираем опасный PostUp на внешний .sh (Permission denied → rollback wg0).
+        conf_text = self._strip_post_hooks(conf_text)
         self.write_config(conf_text)
+
         try:
             self._firewall.ensure_ip_forward()
-            self._firewall.ensure(
-                wg_port=listen_port,
-                xray_port=xray_port,
-                wg_subnet=subnet if "/" in subnet else f"{subnet}/24",
-            )
         except FirewallError as exc:
             raise WireGuardError(str(exc)) from exc
 
         try:
             host_exec.systemctl("enable", self._unit)
-            # restart безопаснее start: подхватывает новый ListenPort/Address.
             host_exec.systemctl("restart", self._unit)
         except host_exec.HostExecError as exc:
             logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
@@ -96,6 +93,27 @@ class WireGuardManager:
             ) from exc
 
         self.wait_until_interface_ready()
+
+        # NAT только ПОСЛЕ успешного подъёма интерфейса (не из PostUp).
+        try:
+            self._firewall.ensure(
+                wg_port=listen_port,
+                xray_port=xray_port,
+                wg_subnet=subnet if "/" in subnet else f"{subnet}/24",
+            )
+        except FirewallError as exc:
+            raise WireGuardError(str(exc)) from exc
+
+    @staticmethod
+    def _strip_post_hooks(conf_text: str) -> str:
+        lines = [
+            line for line in conf_text.splitlines()
+            if not line.startswith("PostUp ")
+            and not line.startswith("PostUp=")
+            and not line.startswith("PostDown ")
+            and not line.startswith("PostDown=")
+        ]
+        return "\n".join(lines).rstrip() + "\n"
 
     def wait_until_interface_ready(self, timeout: float | None = None) -> None:
         if timeout is None:
@@ -120,16 +138,9 @@ class WireGuardManager:
         )
 
     def reload_config(self, *, conf_text: str, listen_port: int, subnet: str) -> None:
-        """Горячее применение peer-ов через wg syncconf + обновление nftables."""
+        """Горячее применение peer-ов через wg syncconf + обновление NAT."""
+        conf_text = self._strip_post_hooks(conf_text)
         self.write_config(conf_text)
-        try:
-            self._firewall.ensure_ip_forward()
-            self._firewall.ensure(
-                wg_port=listen_port,
-                wg_subnet=subnet if "/" in subnet else f"{subnet}/24",
-            )
-        except FirewallError as exc:
-            raise WireGuardError(str(exc)) from exc
 
         if not self.is_running():
             self.ensure_server_running(
