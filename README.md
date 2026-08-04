@@ -100,10 +100,15 @@ Firewall панели провайдера**. Типичный симптом: V
 ## Установка на Ubuntu Server
 
 ```bash
-git clone <URL_ТВОЕГО_РЕПОЗИТОРИЯ>.git
+git clone https://github.com/ink1rk/mtproxy-panel.git
 cd mtproxy-panel
 bash install.sh
 ```
+
+`install.sh` сам выберет Python **3.12/3.13** (на свежих Ubuntu `python3` часто уже 3.14,
+а у старых зависимостей для него нет готовых wheels — установка pillow/pydantic
+тогда падает на сборке из исходников). Если venv уже был создан на 3.14 и
+сломался — скрипт пересоздаст его.
 
 Скрипт автоматически:
 
