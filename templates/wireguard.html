@@ -40,7 +40,35 @@
     </div>
 
     {% else %}
-    <!-- ============== Сервер настроен: список клиентов ============== -->
+    <!-- ============== Сервер настроен: QR сразу, без ручных шагов ============== -->
+    {% if primary_peer %}
+    <div class="row justify-content-center mb-4">
+        <div class="col-lg-5">
+            <div class="card-surface p-4 p-md-5 text-center">
+                <p class="text-secondary small mb-2">Отсканируй в приложении WireGuard</p>
+                <h1 class="h4 mb-3">{{ primary_peer.name }}</h1>
+                <img src="{{ primary_peer.qr_url }}?t={{ primary_peer.created_at }}"
+                     alt="QR WireGuard" width="280" height="280"
+                     class="rounded mb-3" style="background:#fff;padding:12px;">
+                <p class="mono small text-secondary mb-2">
+                    {{ server_config.endpoint_ip }}:{{ server_config.listen_port }}
+                    · {{ primary_peer.allocated_ip }}
+                </p>
+                <p class="small text-secondary mb-3">
+                    {{ connection_labels.get(primary_peer.id, "нет подключений") }}
+                    {% if traffic_labels.get(primary_peer.id) %}
+                    · {{ traffic_labels.get(primary_peer.id) }}
+                    {% endif %}
+                </p>
+                <a href="/wireguard/peers/{{ primary_peer.id }}/download"
+                   class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-download"></i> Скачать .conf
+                </a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <div class="row g-3 mb-4">
         <div class="col-6 col-md-3">
             <div class="stat-card">
@@ -96,7 +124,7 @@
                         <th>VPN-адрес</th>
                         <th>Public Key</th>
                         <th>Последнее подключение</th>
-                        <th>Создан</th>
+                        <th>Трафик</th>
                         <th>QR</th>
                         <th></th>
                     </tr>
@@ -113,7 +141,7 @@
                             </div>
                         </td>
                         <td class="text-secondary small">{{ connection_labels.get(peer.id, "нет подключений") }}</td>
-                        <td class="text-secondary small">{{ peer.created_at[:19].replace("T", " ") }}</td>
+                        <td class="text-secondary small mono">{{ traffic_labels.get(peer.id, "↓ 0 B / ↑ 0 B") }}</td>
                         <td><img src="{{ peer.qr_url }}" alt="QR" width="64" height="64" class="qr-thumb"></td>
                         <td>
                             <div class="d-flex gap-2">

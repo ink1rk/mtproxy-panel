@@ -143,8 +143,11 @@ WG_CONTAINER_NAME: str = "wg_server"
 WG_INTERFACE_NAME: str = "wg0"
 WG_SYSTEMD_UNIT: str = "wg-quick@wg0.service"
 WG_DEFAULT_PORT: int = 51820
-WG_DEFAULT_SUBNET: str = "10.66.0.0/24"
+WG_DEFAULT_SUBNET: str = "10.8.0.0/24"
 WG_DEFAULT_DNS: str = "1.1.1.1"
+# Авто: при старте панели поднять WG + создать peer с QR (без ручных шагов).
+WG_AUTO_PROVISION: bool = True
+WG_DEFAULT_PEER_NAME: str = "iphone"
 WG_KEEPALIVE_SECONDS: int = 25
 # 1280 — безопаснее для LTE/CGNAT (wg-easy часто ставят так на мобильных).
 WG_CLIENT_MTU: int = 1280

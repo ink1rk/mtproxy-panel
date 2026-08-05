@@ -68,8 +68,9 @@ class WireGuardManager:
         return self.get_status() == "running"
 
     def _stop_docker_wg(self) -> None:
-        """Убираем контейнер wg_server — он конфликтует по :51820."""
+        """Убираем Docker WG (wg_server / wg-easy) — конфликт по :51820."""
         host_exec.run(["docker", "rm", "-f", config.WG_CONTAINER_NAME], check=False)
+        host_exec.run(["docker", "rm", "-f", "wg-easy"], check=False)
 
     def _augment_postup(self, conf_text: str, *, wan: str, listen_port: int, subnet: str) -> str:
         """

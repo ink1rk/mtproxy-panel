@@ -65,6 +65,11 @@ class WireGuardConfigTests(unittest.TestCase):
         ip = wc.allocate_next_ip("10.66.0.0/24", {"10.66.0.2", "10.66.0.3"})
         self.assertEqual(ip, "10.66.0.4")
 
+    def test_default_subnet_matches_proven_path(self) -> None:
+        self.assertEqual(config.WG_DEFAULT_SUBNET, "10.8.0.0/24")
+        self.assertTrue(config.WG_AUTO_PROVISION)
+        self.assertEqual(config.WG_DEFAULT_PEER_NAME, "iphone")
+
 
 if __name__ == "__main__":
     unittest.main()

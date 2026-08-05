@@ -165,6 +165,42 @@ class WireGuardService:
             dns=dns,
         )
 
+    def ensure_ready(self) -> WireGuardPeer | None:
+        """
+        Без ручных шагов: сервер + peer с QR.
+        Возвращает основной peer (первый / default), либо None если auto выключен.
+        """
+        import os
+
+        if os.environ.get("MTPROXY_DISABLE_WG") == "1":
+            logger.info("WG auto-provision disabled (MTPROXY_DISABLE_WG=1)")
+            return None
+        if not config.WG_AUTO_PROVISION:
+            self.ensure_running_if_configured()
+            peers = self.list_peers()
+            return peers[0] if peers else None
+
+        server_config = self.get_server_config()
+        if server_config is None:
+            logger.info("WG auto-provision: создаю сервер")
+            server_config = self.setup_server(
+                listen_port=config.WG_DEFAULT_PORT,
+                subnet=config.WG_DEFAULT_SUBNET,
+                dns=config.WG_DEFAULT_DNS,
+            )
+
+        peers = self.list_peers()
+        if not peers:
+            logger.info(
+                "WG auto-provision: создаю peer %r", config.WG_DEFAULT_PEER_NAME,
+            )
+            peer = self.add_peer(config.WG_DEFAULT_PEER_NAME)
+        else:
+            self.ensure_running_if_configured()
+            peer = peers[0]
+
+        return peer
+
     def ensure_running_if_configured(self) -> None:
         # Когда на хосте крутится отдельный wg-easy — не трогаем :51820.
         import os

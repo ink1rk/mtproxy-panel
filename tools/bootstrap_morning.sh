@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Полный подъём стека на VPS: native WG (формат wg-easy) + panel + selftest.
+# Полный подъём: native WG в панели + авто peer с QR. Без wg-easy и без ручных шагов.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "== 1. stop conflicting WG containers =="
+echo "== 1. stop conflicting WG (wg-easy / docker / old iface) =="
 docker rm -f wg_server wg-easy 2>/dev/null || true
 systemctl disable --now wg-quick@wg0 2>/dev/null || true
 wg-quick down wg0 2>/dev/null || true
 ip link delete wg0 2>/dev/null || true
 
+# панель снова владеет WireGuard
+rm -f /etc/systemd/system/mtproxy-panel.service.d/override.conf
+systemctl daemon-reload
+
 echo "== 2. git pull =="
-git pull origin cursor/native-vpn-stack-3616 || true
+git fetch origin cursor/native-vpn-stack-3616 || true
+git reset --hard origin/cursor/native-vpn-stack-3616 || git pull origin cursor/native-vpn-stack-3616 || true
 
 echo "== 3. sysctl =="
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
@@ -26,9 +31,9 @@ net.ipv4.conf.default.rp_filter=2
 net.ipv4.conf.eth0.rp_filter=2
 EOF
 
-echo "== 4. restart panel (migrate DB + ensure WG) =="
+echo "== 4. reset WG DB state + auto-provision =="
 systemctl restart mtproxy-panel
-sleep 3
+sleep 2
 
 venv/bin/python - <<'PY'
 from database import init_db
@@ -36,28 +41,18 @@ init_db()
 
 from vpn_service import WireGuardService
 from vpn_health import check_wireguard
-import config
 
 svc = WireGuardService()
+# Чистый старт: сброс старых ключей (иначе телефон держит протухший туннель)
+if svc.get_server_config() is not None:
+    print("reset old WG config...")
+    svc.reset_server()
+
+peer = svc.ensure_ready()
 cfg = svc.get_server_config()
-if cfg is None:
-    print("WG не настроен — создаю сервер...")
-    cfg = svc.setup_server(
-        listen_port=config.WG_DEFAULT_PORT,
-        subnet=config.WG_DEFAULT_SUBNET,
-        dns=config.WG_DEFAULT_DNS,
-    )
-
-# Пересоздаём единственный peer iphone с PSK / MTU1280 / Address/24
-for p in list(svc.list_peers()):
-    print(f"delete old peer {p.name}")
-    svc.delete_peer(p.id)
-
-peer = svc.add_peer("iphone")
-print("=== NEW CLIENT CONFIG (import on phone) ===")
+assert cfg is not None and peer is not None
+print("=== QR peer ===", peer.name, peer.allocated_ip, peer.qr_filename)
 print(peer.config_text)
-print("=== QR ===", peer.qr_filename)
-
 report = check_wireguard(listen_port=cfg.listen_port, subnet=cfg.subnet)
 print(report.format())
 if not report.ok:
@@ -65,7 +60,9 @@ if not report.ok:
 PY
 
 echo "== 5. enable units =="
-systemctl enable mtproxy-panel wg-quick@wg0 mtproxy-wg-forward.service 2>/dev/null || true
+systemctl enable mtproxy-panel wg-quick@wg0 2>/dev/null || true
+systemctl restart mtproxy-panel
+sleep 2
 bash tools/fix_wg_forward.sh || true
 
 echo "== 6. selftest =="
@@ -73,16 +70,14 @@ bash tools/wg_selftest.sh
 
 echo "== 7. status =="
 systemctl is-active mtproxy-panel wg-quick@wg0
-ss -ulnp | grep 51820
-ss -tlnp | grep 8000
+ss -ulnp | grep 51820 || true
+ss -tlnp | grep 8000 || true
 wg show
 curl -sS -o /dev/null -w 'panel_http=%{http_code}\n' http://127.0.0.1:8000/ || true
 
 echo
 echo "============================================"
-echo "ГОТОВО. Утром:"
-echo "  1) Открой http://72.56.92.22:8000/wireguard"
-echo "  2) Удали старый туннель на iPhone"
-echo "  3) Сканируй QR peer 'iphone' (новый: PSK + MTU 1280)"
-echo "  4) wg show — transfer должен расти"
+echo "ГОТОВО — ничего вручную создавать не нужно."
+echo "  Открой http://$(curl -4 -fsS https://api.ipify.org 2>/dev/null || echo 72.56.92.22):8000/wireguard"
+echo "  Удали старый туннель на телефоне и сканируй большой QR."
 echo "============================================"
