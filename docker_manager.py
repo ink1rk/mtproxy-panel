@@ -12,8 +12,19 @@ from docker.errors import APIError, NotFound
 from docker.models.containers import Container
 
 import config
+import docker_iptables
 
 logger = logging.getLogger(__name__)
+
+_DOCKER_CHAIN_ERROR_MARKERS = (
+    "no chain/target/match by that name",
+    "unable to enable dnat rule",
+)
+
+
+def _looks_like_docker_chain_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _DOCKER_CHAIN_ERROR_MARKERS)
 
 
 class DockerUnavailableError(RuntimeError):
@@ -79,23 +90,53 @@ class DockerManager:
         host_port: int,
         secret: str,
     ) -> Container:
-        """Создаёт и запускает контейнер telegrammessenger/proxy."""
+        """
+        Создаёт и запускает контейнер telegrammessenger/proxy.
+
+        На Ubuntu 24.04+/26.04 Docker периодически теряет цепочку
+        nat/DOCKER (iptables → nft-backend после ребута/апдейта) — публикация
+        портов падает с "No chain/target/match by that name". Чиним один раз
+        (iptables-legacy + restart docker) и повторяем создание контейнера.
+        """
         from docker.types import LogConfig
 
         log_config = LogConfig(
             type=LogConfig.types.JSON,
             config=config.DOCKER_LOG_CONFIG["config"],
         )
-        container = self._client.containers.run(
-            config.MTPROXY_DOCKER_IMAGE,
-            name=container_name,
-            detach=True,
-            restart_policy={"Name": "unless-stopped"},
-            ports={f"{config.CONTAINER_INTERNAL_PORT}/tcp": host_port},
-            environment={"SECRET": secret},
-            log_config=log_config,
-        )
-        return container
+
+        def _run() -> Container:
+            return self._client.containers.run(
+                config.MTPROXY_DOCKER_IMAGE,
+                name=container_name,
+                detach=True,
+                restart_policy={"Name": "unless-stopped"},
+                ports={f"{config.CONTAINER_INTERNAL_PORT}/tcp": host_port},
+                environment={"SECRET": secret},
+                log_config=log_config,
+            )
+
+        try:
+            return _run()
+        except APIError as exc:
+            if not _looks_like_docker_chain_error(exc):
+                raise
+            logger.warning(
+                "Docker nat/DOCKER chain отсутствует, чиню (iptables-legacy + restart): %s",
+                exc,
+            )
+            try:
+                self._client.containers.get(container_name).remove(force=True)
+            except NotFound:
+                pass
+            try:
+                docker_iptables.ensure_docker_iptables(force_repair=True)
+            except docker_iptables.DockerIptablesError as repair_exc:
+                raise APIError(
+                    f"Docker DOCKER chain чинить не удалось: {repair_exc}"
+                ) from exc
+            self._client = docker.from_env()
+            return _run()
 
     def wait_until_running(
         self,
