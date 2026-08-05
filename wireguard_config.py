@@ -110,8 +110,9 @@ def render_client_config(
     subnet: str = config.WG_DEFAULT_SUBNET,
     preshared_key: str = "",
 ) -> str:
-    """Клиент как у wg-easy: Address /prefix, PSK, MTU, IPv4-only AllowedIPs."""
-    _, prefix = _subnet_base_and_prefix(subnet)
+    """Клиент: Address /32, PSK, MTU, IPv4-only AllowedIPs."""
+    del subnet  # prefix фиксирован — см. WG_CLIENT_ADDRESS_PREFIX
+    prefix = config.WG_CLIENT_ADDRESS_PREFIX
     lines = [
         "[Interface]",
         f"PrivateKey = {client_private_key}",

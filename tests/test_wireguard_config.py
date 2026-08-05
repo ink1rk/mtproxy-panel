@@ -53,7 +53,7 @@ class WireGuardConfigTests(unittest.TestCase):
             subnet="10.66.0.0/24",
             preshared_key="PSK",
         )
-        self.assertIn("Address = 10.66.0.2/24", conf)
+        self.assertIn("Address = 10.66.0.2/32", conf)
         self.assertIn("PresharedKey = PSK", conf)
         self.assertIn("AllowedIPs = 0.0.0.0/0", conf)
         self.assertNotIn("::/0", conf)
@@ -67,6 +67,8 @@ class WireGuardConfigTests(unittest.TestCase):
 
     def test_default_subnet_matches_proven_path(self) -> None:
         self.assertEqual(config.WG_DEFAULT_SUBNET, "10.8.0.0/24")
+        self.assertEqual(config.WG_DEFAULT_PORT, 443)
+        self.assertEqual(config.WG_CLIENT_ADDRESS_PREFIX, "32")
         self.assertTrue(config.WG_AUTO_PROVISION)
         self.assertEqual(config.WG_DEFAULT_PEER_NAME, "iphone")
 

@@ -120,19 +120,64 @@ class WireGuardManager:
     def _ensure_nat(self, *, subnet: str, listen_port: int) -> None:
         wan = detect_wan_interface()
         network_cidr = subnet if "/" in subnet else f"{subnet}/24"
+        # Публичный IP для SNAT (стабильнее MASQUERADE на некоторых VPS).
+        src_ip = ""
+        addr = host_exec.run(
+            ["bash", "-c", f"ip -4 -o addr show dev {wan} | awk '{{print $4; exit}}'"],
+            check=False,
+        )
+        if addr.ok and addr.stdout.strip():
+            src_ip = addr.stdout.strip().split("/")[0]
+
+        snat_line = (
+            f"iptables -t nat -C POSTROUTING -s {network_cidr} -o {wan} "
+            f"-j SNAT --to-source {src_ip} 2>/dev/null || "
+            f"iptables -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} "
+            f"-j SNAT --to-source {src_ip}"
+            if src_ip
+            else (
+                f"iptables -t nat -C POSTROUTING -s {network_cidr} -o {wan} "
+                f"-j MASQUERADE 2>/dev/null || "
+                f"iptables -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} "
+                f"-j MASQUERADE"
+            )
+        )
+
         script = f"""
 set -e
 iptables -P FORWARD ACCEPT 2>/dev/null || true
-iptables -C DOCKER-USER -i wg0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i wg0 -j ACCEPT
-iptables -C DOCKER-USER -o wg0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -o wg0 -j ACCEPT
-iptables -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE 2>/dev/null \\
-  || iptables -t nat -A POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE
+# До Docker-цепочек — иначе return-path иногда теряется.
+iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i wg0 -j ACCEPT
+iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o wg0 -j ACCEPT
+if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+  iptables -C DOCKER-USER -i wg0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -i wg0 -j ACCEPT
+  iptables -C DOCKER-USER -o wg0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -o wg0 -j ACCEPT
+fi
+{snat_line}
 iptables -C INPUT -p udp -m udp --dport {listen_port} -j ACCEPT 2>/dev/null \\
-  || iptables -A INPUT -p udp -m udp --dport {listen_port} -j ACCEPT
-iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT
-iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o wg0 -j ACCEPT
-echo NAT_OK wan={wan}
+  || iptables -I INPUT 1 -p udp -m udp --dport {listen_port} -j ACCEPT
+# ICMP туннеля (пинг 8.8.8.8 / gw)
+iptables -C FORWARD -i wg0 -p icmp -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i wg0 -p icmp -j ACCEPT
+iptables -C FORWARD -o wg0 -p icmp -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o wg0 -p icmp -j ACCEPT
+# TCP MSS clamp — сайты при MTU 1280
+iptables -t mangle -C FORWARD -i wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
+  || iptables -t mangle -A FORWARD -i wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+iptables -t mangle -C FORWARD -o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
+  || iptables -t mangle -A FORWARD -o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+echo NAT_OK wan={wan} src={src_ip or 'masq'} port={listen_port}
 """
+        # Persist helper for boot / docker restart
+        helper = (
+            "#!/bin/bash\nset -e\n"
+            f"WG_SUBNET={network_cidr}\n"
+            f"WG_PORT={listen_port}\n"
+            + script
+        )
+        try:
+            host_exec.write_root_file(config.WG_NAT_HELPER_PATH, helper, mode=0o755)
+        except host_exec.HostExecError as exc:
+            logger.warning("NAT helper persist: %s", exc)
+
         result = host_exec.run(["bash", "-c", script], check=False)
         if not result.ok:
             raise WireGuardError(f"NAT/FORWARD не применился: {result.output}")

@@ -70,7 +70,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 Environment=WG_SUBNET=10.8.0.0/24
-ExecStart=/root/mtproxy-panel/tools/fix_wg_forward.sh
+ExecStart=/bin/bash -c '/usr/local/sbin/mtproxy-wg-nat.sh 2>/dev/null || /root/mtproxy-panel/tools/fix_wg_forward.sh'
 
 [Install]
 WantedBy=multi-user.target
@@ -87,7 +87,7 @@ bash tools/wg_selftest.sh
 
 echo "== 7. status =="
 systemctl is-active mtproxy-panel wg-quick@wg0
-ss -ulnp | grep 51820 || true
+ss -ulnp | grep -E '443|51820' || true
 ss -tlnp | grep 8000 || true
 wg show
 curl -sS -o /dev/null -w 'panel_http=%{http_code}\n' http://127.0.0.1:8000/ || true
@@ -96,5 +96,8 @@ echo
 echo "============================================"
 echo "ГОТОВО — ничего вручную создавать не нужно."
 echo "  Открой http://$(curl -4 -fsS https://api.ipify.org 2>/dev/null || echo 72.56.92.22):8000/wireguard"
-echo "  Удали старый туннель на телефоне и сканируй большой QR."
+echo "  УДАЛИ все старые туннели на ПК/телефоне."
+echo "  Сканируй новый QR (Endpoint теперь UDP 443)."
+echo "  В Timeweb firewall (если включён) разреши UDP 443."
+echo "  Закрытые 25/587/3389/... к WireGuard НЕ относятся."
 echo "============================================"
