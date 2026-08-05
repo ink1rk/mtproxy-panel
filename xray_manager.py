@@ -13,6 +13,7 @@ from pathlib import Path
 
 import config
 import host_exec
+import utils
 from firewall_manager import FirewallError, FirewallManager
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ class XrayManager:
             logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
             raise XrayError(f"Не удалось запустить {self._unit}: {exc}\n{logs}") from exc
 
-        self._wait_running()
+        self._wait_running(listen_port)
 
     def apply_config(
         self,
@@ -143,7 +144,7 @@ class XrayManager:
             host_exec.systemctl("restart", self._unit)
         except host_exec.HostExecError as exc:
             raise XrayError(f"Не удалось перезапустить Xray: {exc}") from exc
-        self._wait_running()
+        self._wait_running(listen_port)
         logger.info("Конфигурация Xray применена (restart %s)", self._unit)
 
     def _ensure_systemd_unit(self) -> None:
@@ -177,17 +178,35 @@ WantedBy=multi-user.target
             host_exec.write_root_file(str(unit_path), desired, mode=0o644)
             host_exec.systemctl("daemon-reload")
 
-    def _wait_running(self) -> None:
+    def _wait_running(self, listen_port: int | None = None) -> None:
+        """
+        systemd 'active' для Type=simple означает лишь что процесс форкнулся —
+        сокет может забиндиться на 100-300мс позже (особенно первый запуск,
+        когда Xray ещё генерирует внутренние структуры REALITY). Если health
+        check запускается сразу после этого, порт иногда ещё не слушает,
+        setup_server() считает это ошибкой и откатывает только что поднятый
+        сервер. Поэтому здесь же дожидаемся реального accept() на порту.
+        """
         deadline = time.monotonic() + config.XRAY_START_TIMEOUT_SECONDS
+        became_active = False
         while time.monotonic() < deadline:
             status = self.get_status()
             if status == "running":
-                return
+                became_active = True
+                if listen_port is None:
+                    return
+                if utils.check_tcp_port_open("127.0.0.1", listen_port, timeout=3.0):
+                    return
             if status == "failed":
                 logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
                 raise XrayError(f"{self._unit} упал:\n{logs}")
             time.sleep(0.4)
         logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
+        if became_active:
+            raise XrayError(
+                f"{self._unit} активен, но порт {listen_port} не открылся за "
+                f"{config.XRAY_START_TIMEOUT_SECONDS:.0f}с\n{logs}"
+            )
         raise XrayError(
             f"{self._unit} не стал active за {config.XRAY_START_TIMEOUT_SECONDS:.0f}с\n{logs}"
         )
