@@ -66,11 +66,16 @@
                 </a>
                 <div class="text-start small text-secondary mt-4 p-3 rounded"
                      style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
-                    <strong class="text-warning">Если handshake есть, а интернета нет (Windows)</strong>
+                    <strong class="text-warning">Если handshake есть, а интернета нет</strong>
                     <ol class="mb-0 mt-2 ps-3">
-                        <li>Отключи/удали <strong>Kerio</strong>, Cisco AnyConnect, корпоративный VPN — они режут WireGuard через WFP.</li>
-                        <li>В cmd: <code>ping 10.8.0.1</code> — если не отвечает, пакеты не входят в туннель на ПК.</li>
-                        <li>В <code>route print</code> должны быть <code>0.0.0.0/1</code> и <code>128.0.0.0/1</code> через <code>10.8.0.2</code>.</li>
+                        <li><strong>Windows:</strong> отключи/удали Kerio, Cisco AnyConnect, корпоративный VPN — они режут WireGuard через WFP.</li>
+                        <li><strong>Телефон (WiFi и мобильный интернет одинаково не работают):</strong>
+                            это почти всегда провайдерский DPI, который душит WireGuard после
+                            рукопожатия (счётчик «получено» не растёт, «отправлено» растёт —
+                            только сервер шлёт keepalive впустую). Порт/конфиг тут ни при чём.</li>
+                        <li>В таком случае используй <a href="/vless" class="link-warning">VLESS+REALITY</a> —
+                            он маскируется под настоящий HTTPS-сайт и не режется тем же DPI,
+                            которым режется WireGuard.</li>
                     </ol>
                 </div>
             </div>

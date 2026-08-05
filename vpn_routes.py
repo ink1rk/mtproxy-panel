@@ -239,6 +239,7 @@ async def vless_page(request: Request) -> HTMLResponse:
     server_config = None
     clients = []
     status = "missing"
+    primary_client = None
 
     service, init_error = _try_get_xray_service()
     if init_error is not None:
@@ -246,7 +247,7 @@ async def vless_page(request: Request) -> HTMLResponse:
     else:
         assert service is not None
         try:
-            service.ensure_ready()
+            primary_client = service.ensure_ready()
         except VpnServiceError as exc:
             logger.error("Xray ensure_ready: %s", exc)
             error_message = str(exc)
@@ -254,6 +255,8 @@ async def vless_page(request: Request) -> HTMLResponse:
         if server_config is not None:
             clients = service.list_clients()
             status = service.get_status()
+            if primary_client is None and clients:
+                primary_client = clients[0]
 
     return templates.TemplateResponse(
         request=request,
@@ -261,6 +264,7 @@ async def vless_page(request: Request) -> HTMLResponse:
         context={
             "server_config": server_config,
             "clients": clients,
+            "primary_client": primary_client,
             "status": status,
             "error_message": error_message,
             "info_message": info_message,

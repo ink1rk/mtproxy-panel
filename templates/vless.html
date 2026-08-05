@@ -52,7 +52,42 @@
     </div>
 
     {% else %}
-    <!-- ============== Сервер настроен: список клиентов ============== -->
+    <!-- ============== Сервер настроен: большой QR сразу, без ручных шагов ============== -->
+    {% if primary_client %}
+    <div class="row justify-content-center mb-4">
+        <div class="col-lg-5">
+            <div class="card-surface p-4 p-md-5 text-center">
+                <p class="text-secondary small mb-2">Отсканируй в приложении VLESS/V2Ray</p>
+                <h1 class="h4 mb-3">{{ primary_client.name }}</h1>
+                <img src="{{ primary_client.qr_url }}?t={{ primary_client.created_at }}"
+                     alt="QR VLESS" width="280" height="280"
+                     class="rounded mb-3" style="background:#fff;padding:12px;">
+                <p class="mono small text-secondary mb-3">
+                    SNI: {{ server_config.server_names }} · порт {{ server_config.listen_port }}
+                </p>
+                <div class="d-flex justify-content-center gap-2 mb-2">
+                    <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ primary_client.vless_link }}" title="Скопировать vless:// ссылку"></i>
+                    <span class="text-secondary small">скопировать ссылку</span>
+                </div>
+                <div class="text-start small text-secondary mt-4 p-3 rounded"
+                     style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
+                    <strong class="text-info">Приложения</strong>
+                    <ul class="mb-0 mt-2 ps-3">
+                        <li><strong>Android:</strong> v2rayNG, NekoBox</li>
+                        <li><strong>iOS:</strong> Streisand, FoXray, Shadowrocket</li>
+                        <li><strong>Windows/macOS:</strong> v2rayN, NekoRay</li>
+                    </ul>
+                    <p class="mb-0 mt-2">
+                        Импортируй ссылку/QR — остальное (REALITY, SNI, flow) уже в ссылке.
+                        Этот протокол маскируется под настоящий HTTPS-сайт и работает там,
+                        где WireGuard режет DPI провайдера.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <div class="row g-3 mb-4">
         <div class="col-6 col-md-3">
             <div class="stat-card">
