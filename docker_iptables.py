@@ -79,7 +79,18 @@ def ensure_iptables_legacy() -> bool:
 
 
 def restart_docker() -> None:
-    _run(["systemctl", "restart", "docker"], check=True)
+    """
+    Полный stop -> sleep -> start, а не 'systemctl restart'.
+
+    На практике (проверено на живом Timeweb VPS) 'systemctl restart docker'
+    иногда НЕ пересоздаёт цепочку nat/DOCKER после смены iptables-alternative
+    — dockerd не успевает полностью снять старые netfilter-хуки до повторного
+    старта. Явный stop docker.socket + docker.service с паузой перед стартом
+    надёжно приводит к пересозданию цепочек.
+    """
+    _run(["systemctl", "stop", "docker.socket", "docker.service"], check=False)
+    time.sleep(2)
+    _run(["systemctl", "start", "docker.service"], check=True)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         ping = _run(["docker", "info"], check=False)
@@ -112,15 +123,22 @@ def ensure_docker_iptables(*, force_repair: bool = False) -> dict[str, str]:
         return info
 
     ensure_iptables_legacy()
-    restart_docker()
-    info["repaired"] = "yes"
-    info["backend_after"] = _iptables_backend()
-    info["docker_chain_after"] = "yes" if docker_nat_chain_exists() else "no"
 
-    if info["docker_chain_after"] != "yes":
-        raise DockerIptablesError(
-            "После restart docker цепочка nat/DOCKER всё ещё отсутствует. "
-            "Проверьте ufw/firewalld/nft, не делают ли iptables -F после Docker. "
-            f"backend={info['backend_after']}"
+    attempts = 2
+    for attempt in range(1, attempts + 1):
+        restart_docker()
+        info["repaired"] = "yes"
+        info["backend_after"] = _iptables_backend()
+        info["docker_chain_after"] = "yes" if docker_nat_chain_exists() else "no"
+        if info["docker_chain_after"] == "yes":
+            return info
+        logger.warning(
+            "Docker restart #%d не восстановил nat/DOCKER — %s",
+            attempt, "повторяю" if attempt < attempts else "сдаюсь",
         )
-    return info
+
+    raise DockerIptablesError(
+        "После restart docker цепочка nat/DOCKER всё ещё отсутствует. "
+        "Проверьте ufw/firewalld/nft, не делают ли iptables -F после Docker. "
+        f"backend={info['backend_after']}"
+    )
