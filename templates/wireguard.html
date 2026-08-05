@@ -64,6 +64,15 @@
                    class="btn btn-sm btn-outline-primary">
                     <i class="bi bi-download"></i> Скачать .conf
                 </a>
+                <div class="text-start small text-secondary mt-4 p-3 rounded"
+                     style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
+                    <strong class="text-warning">Если handshake есть, а интернета нет (Windows)</strong>
+                    <ol class="mb-0 mt-2 ps-3">
+                        <li>Отключи/удали <strong>Kerio</strong>, Cisco AnyConnect, корпоративный VPN — они режут WireGuard через WFP.</li>
+                        <li>В cmd: <code>ping 10.8.0.1</code> — если не отвечает, пакеты не входят в туннель на ПК.</li>
+                        <li>В <code>route print</code> должны быть <code>0.0.0.0/1</code> и <code>128.0.0.0/1</code> через <code>10.8.0.2</code>.</li>
+                    </ol>
+                </div>
             </div>
         </div>
     </div>
