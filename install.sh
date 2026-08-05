@@ -227,21 +227,32 @@ ensure_docker() {
 }
 
 ensure_mtproxy_image() {
-    local images=(
-        "telegrammessenger/proxy:latest"
-        "lscr.io/linuxserver/wireguard:latest"
-    )
-    local image
-    for image in "${images[@]}"; do
-        if as_root docker image inspect "${image}" >/dev/null 2>&1; then
-            log "Docker-образ уже есть: ${image}"
-            continue
+    # lscr.io/linuxserver/wireguard когда-то использовался для Docker WG —
+    # WireGuard теперь native (wg-quick), образ больше не нужен.
+    local image="telegrammessenger/proxy:latest"
+
+    if as_root docker image inspect "${image}" >/dev/null 2>&1; then
+        log "Docker-образ уже есть: ${image}"
+        return
+    fi
+
+    log "Скачиваю Docker-образ ${image}..."
+    local attempt
+    for attempt in 1 2 3; do
+        if as_root docker pull "${image}"; then
+            return
         fi
-        log "Скачиваю Docker-образ ${image}..."
-        if ! as_root docker pull "${image}"; then
-            fail "Не удалось скачать ${image}. Проверьте сеть/Docker Hub и повторите."
-        fi
+        log "Попытка ${attempt}/3 не удалась (вероятно, rate limit Docker Hub на этой сети) — жду и повторяю."
+        sleep $((attempt * 15))
     done
+
+    # Не валим установку целиком: WireGuard/Xray/панель не зависят от этого
+    # образа. MTProxy просто не создастся автоматически при первом старте —
+    # панель залогирует предупреждение и повторит попытку при следующем
+    # заходе на /, когда rate limit снимется (обычно в течение часа).
+    log "ВНИМАНИЕ: не удалось скачать ${image} (Docker Hub rate limit?). " \
+        "Продолжаю установку без него — MTProxy настроится сам, когда " \
+        "образ станет доступен (перезапустите панель или подождите)."
 }
 
 remove_legacy_docker_vpn() {
