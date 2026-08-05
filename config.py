@@ -31,6 +31,12 @@ for _directory in (DATA_DIR, LOG_DIR, STATIC_DIR, QR_DIR, TEMPLATES_DIR):
 MTPROXY_DOCKER_IMAGE: str = "telegrammessenger/proxy:latest"
 CONTAINER_NAME_PREFIX: str = "mtproxy_"
 CONTAINER_INTERNAL_PORT: int = 443
+# Порт на хосте для авто-созданного (первого) прокси. 443 — как в
+# официальных рекомендациях Telegram и на проверенном годами рабочем
+# сервере: многие сети (особенно мобильные операторы РФ) пропускают
+# только стандартные веб-порты и режут произвольные высокие TCP-порты
+# ещё до TCP SYN — именно это наблюдалось со случайным портом.
+MTPROXY_DEFAULT_HOST_PORT: int = 443
 
 DOCKER_CONTAINER_START_TIMEOUT_SECONDS: float = 20.0
 DOCKER_CONTAINER_POLL_INTERVAL_SECONDS: float = 0.5

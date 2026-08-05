@@ -12,6 +12,7 @@ WireGuard/VLESS специфику, и как задел на будущую е�
 """
 from __future__ import annotations
 
+import config
 from models import Proxy, ProviderClient
 from providers.base import ProviderError, VpnProvider
 from service import ProxyService, ProxyServiceError
@@ -50,9 +51,14 @@ class MTProxyProvider(VpnProvider):
         if proxies:
             return _to_client(proxies[0])
         try:
-            return _to_client(self._service.create_proxy())
-        except ProxyServiceError as exc:
-            raise ProviderError(str(exc)) from exc
+            # 443 — как у Telegram-рекомендаций: случайный высокий порт
+            # многие мобильные сети режут ещё до TCP SYN.
+            return _to_client(self._service.create_proxy(desired_port=config.MTPROXY_DEFAULT_HOST_PORT))
+        except ProxyServiceError:
+            try:
+                return _to_client(self._service.create_proxy())
+            except ProxyServiceError as exc:
+                raise ProviderError(str(exc)) from exc
 
     def status(self) -> str:
         proxies = self._service.list_proxies()

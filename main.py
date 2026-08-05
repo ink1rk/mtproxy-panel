@@ -100,11 +100,22 @@ def _ensure_vpn_servers_running() -> None:
         logger.exception("Неожиданная ошибка при автозапуске Xray")
 
     try:
+        import config
         from service import ProxyService, ProxyServiceError
 
         proxy_service = ProxyService()
         if not proxy_service.list_proxies():
-            proxy = proxy_service.create_proxy()
+            try:
+                # 443 — как у Telegram-рекомендаций и проверенного рабочего
+                # сервера: случайный высокий порт многие мобильные сети РФ
+                # режут ещё до TCP SYN, даже когда порт открыт снаружи.
+                proxy = proxy_service.create_proxy(desired_port=config.MTPROXY_DEFAULT_HOST_PORT)
+            except ProxyServiceError as exc:
+                logger.warning(
+                    "MTProxy на порту %s не удался (%s) — пробую случайный порт",
+                    config.MTPROXY_DEFAULT_HOST_PORT, exc,
+                )
+                proxy = proxy_service.create_proxy()
             logger.info(
                 "MTProxy готов: container=%s port=%s", proxy.container_name, proxy.port,
             )
