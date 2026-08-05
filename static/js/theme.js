@@ -9,6 +9,52 @@
 (function () {
     "use strict";
 
+    /* --- Копирование в буфер обмена с фолбэком.
+       navigator.clipboard требует "secure context" (https или localhost) —
+       на панели, открытой по обычному http://IP:8000 (без TLS-сертификата,
+       частый случай для самостоятельно установленной VPN-панели), этого
+       объекта у браузера просто нет, и копирование молча ничего не делает.
+       PanelClipboard.write() пробует современный API, а если он недоступен
+       или падает — откатывается на document.execCommand('copy'), который
+       работает и по http. Используется всеми inline-скриптами в шаблонах
+       (window.PanelClipboard), чтобы не дублировать эту логику. --- */
+    window.PanelClipboard = {
+        write: function (text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                return navigator.clipboard.writeText(text).catch(function () {
+                    return window.PanelClipboard._fallback(text);
+                });
+            }
+            return window.PanelClipboard._fallback(text);
+        },
+        _fallback: function (text) {
+            return new Promise(function (resolve, reject) {
+                var textarea = document.createElement("textarea");
+                textarea.value = text;
+                textarea.setAttribute("readonly", "");
+                textarea.style.position = "fixed";
+                textarea.style.top = "-1000px";
+                textarea.style.left = "-1000px";
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                textarea.setSelectionRange(0, text.length);
+                var ok = false;
+                try {
+                    ok = document.execCommand("copy");
+                } catch (err) {
+                    ok = false;
+                }
+                document.body.removeChild(textarea);
+                if (ok) {
+                    resolve();
+                } else {
+                    reject(new Error("copy command failed"));
+                }
+            });
+        },
+    };
+
     document.addEventListener("DOMContentLoaded", function () {
         initSidebarToggle();
         initRipple();

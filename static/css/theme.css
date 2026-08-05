@@ -518,8 +518,27 @@ h1, h2, h3, h4, h5, h6 {
 .btn-outline-danger {
     backdrop-filter: blur(6px);
 }
-.btn-outline-secondary { border-color: var(--border-strong); }
-.btn-outline-secondary:hover { background: var(--surface-2); border-color: var(--border-strong); }
+/* Bootstrap-дефолт для outline-secondary — тусклый #6c757d, рассчитанный на
+   светлый фон. На тёмной теме это выглядит как «тёмная кнопка с тёмным
+   текстом» — почти нечитаемо. Явно задаём наш светлый secondary-цвет. */
+.btn-outline-secondary {
+    --bs-btn-color: var(--text-secondary);
+    --bs-btn-border-color: var(--border-strong);
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-bg: var(--surface-2);
+    --bs-btn-hover-border-color: var(--border-strong);
+    --bs-btn-active-color: #fff;
+    --bs-btn-active-bg: var(--surface-2);
+    --bs-btn-active-border-color: var(--border-strong);
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
+}
+.btn-outline-secondary:hover,
+.btn-outline-secondary:focus {
+    background: var(--surface-2);
+    border-color: var(--border-strong);
+    color: #fff;
+}
 
 /* Ripple-эффект (создаётся JS в theme.js) */
 .btn .ripple {

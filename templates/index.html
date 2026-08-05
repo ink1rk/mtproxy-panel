@@ -276,11 +276,13 @@
     document.querySelectorAll('.copy-btn').forEach(function (el) {
         el.addEventListener('click', function () {
             const text = el.getAttribute('data-copy');
-            navigator.clipboard.writeText(text).then(function () {
+            window.PanelClipboard.write(text).then(function () {
                 const original = el.className;
                 el.classList.remove('bi-clipboard', 'bi-link-45deg');
                 el.classList.add('bi-check2', 'text-success');
                 setTimeout(function () { el.className = original; }, 1200);
+            }).catch(function () {
+                el.setAttribute('title', 'Не удалось скопировать — выделите текст вручную');
             });
         });
     });
