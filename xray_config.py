@@ -21,6 +21,16 @@ def render_server_config(
     Полный config.json для Xray-сервера.
 
     clients — список пар (client_uuid, name); email используется в access-логах.
+
+    Транспорт XHTTP (не голый TCP+Vision): данные идут отдельными
+    HTTP-запросами вместо одного хрупкого TCP-потока с TLS-in-TLS.
+    На нестабильных/мобильных сетях raw TCP+REALITY+Vision у части
+    пользователей стабильно давал "failed to read client hello" —
+    сервер был доказанно исправен (внешний тестовый клиент проходил
+    20/20), проблема именно в устойчивости сырого TCP-потока на
+    конкретном сетевом пути. XHTTP переживает потерю/повтор отдельных
+    HTTP-запросов гораздо лучше, чем один непрерывный TCP-поток —
+    именно для этого он и был добавлен в Xray-core.
     """
     return {
         "log": {"loglevel": "info"},
@@ -31,17 +41,14 @@ def render_server_config(
                 "protocol": "vless",
                 "settings": {
                     "clients": [
-                        {
-                            "id": client_uuid,
-                            "email": name,
-                            **({"flow": config.XRAY_FLOW} if config.XRAY_FLOW else {}),
-                        }
+                        {"id": client_uuid, "email": name}
                         for client_uuid, name in clients
                     ],
                     "decryption": "none",
                 },
                 "streamSettings": {
-                    "network": "tcp",
+                    "network": "xhttp",
+                    "xhttpSettings": {"path": config.XRAY_XHTTP_PATH},
                     "security": "reality",
                     "realitySettings": {
                         "show": False,
@@ -76,12 +83,12 @@ def build_vless_link(
     server_name: str,
     remark: str,
 ) -> str:
-    """vless:// ссылка для v2rayNG / NekoBox / Shadowrocket."""
+    """vless:// ссылка для v2rayNG / NekoBox / Shadowrocket (транспорт XHTTP)."""
+    path_encoded = quote(config.XRAY_XHTTP_PATH, safe="")
     params = (
-        f"type=tcp&security=reality&pbk={public_key}&fp=chrome"
+        f"encryption=none&security=reality&pbk={public_key}&fp=chrome"
         f"&sni={server_name}&sid={short_id}"
+        f"&type=xhttp&path={path_encoded}&mode=auto"
     )
-    if config.XRAY_FLOW:
-        params += f"&flow={config.XRAY_FLOW}"
     remark_encoded = quote(remark, safe="")
     return f"vless://{client_uuid}@{server_ip}:{listen_port}?{params}#{remark_encoded}"

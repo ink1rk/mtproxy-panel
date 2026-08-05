@@ -210,7 +210,13 @@ XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
 # Авто: при старте панели поднять Xray + создать клиента (без ручных шагов).
 XRAY_AUTO_PROVISION: bool = True
 XRAY_DEFAULT_CLIENT_NAME: str = "main"
-# Официальный режим VLESS+REALITY + Vision.
+# Транспорт XHTTP вместо голого TCP+Vision: данные идут отдельными HTTP-
+# запросами, что заметно устойчивее к потере пакетов на плохих мобильных
+# сетях, где один непрерывный TCP-поток с REALITY стабильно рвался
+# ("failed to read client hello") при доказанно исправном сервере.
+XRAY_XHTTP_PATH: str = "/xhttp"
+# Официальный режим VLESS+REALITY + Vision — используется только для
+# транспорта tcp (не применяется к xhttp, оставлен для истории/отладки).
 XRAY_FLOW: str = "xtls-rprx-vision"
 # Xray-core >= 26.7.11 при пустом minClientVer подставляет 26.3.27 и режет
 # обычные мобильные клиенты (TLS «ок», прокси-байт 0). Явно держим низкий порог.

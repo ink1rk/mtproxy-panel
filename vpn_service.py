@@ -632,6 +632,9 @@ class XrayService:
         if server_config is None:
             raise VpnServiceError("Xray-сервер ещё не настроен")
         try:
+            # Обновляем vless:// ссылки/QR на случай смены транспорта или IP —
+            # иначе клиент продолжит показывать устаревшую ссылку.
+            self._refresh_client_links(server_config)
             self._apply_client_list(server_config)
             _require_health(vpn_health.check_xray(listen_port=server_config.listen_port))
         except (XrayError, VpnServiceError) as exc:
