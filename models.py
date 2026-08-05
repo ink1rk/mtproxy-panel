@@ -76,6 +76,7 @@ class WireGuardPeer:
     config_text: str
     qr_filename: str
     created_at: str
+    preshared_key: str = ""
 
     @property
     def qr_url(self) -> str:

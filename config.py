@@ -132,19 +132,30 @@ EXPECTED_ADMIN_USERS_COLUMNS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# WireGuard VPN
+# WireGuard VPN — native wg-quick@wg0 + PostUp как wg-easy
 # ---------------------------------------------------------------------------
 WG_CONFIG_DIR: Path = DATA_DIR / "wireguard"
 WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+# Legacy Docker (больше не используется; manager делает docker rm -f).
 WG_DOCKER_IMAGE: str = "lscr.io/linuxserver/wireguard:latest"
 WG_CONTAINER_NAME: str = "wg_server"
 WG_INTERFACE_NAME: str = "wg0"
-WG_DEFAULT_PORT: int = 51820
-WG_DEFAULT_SUBNET: str = "10.66.0.0/24"
+WG_SYSTEMD_UNIT: str = "wg-quick@wg0.service"
+WG_DEFAULT_PORT: int = 443
+WG_DEFAULT_SUBNET: str = "10.8.0.0/24"
 WG_DEFAULT_DNS: str = "1.1.1.1"
+# Авто: при старте панели поднять WG + создать peer с QR (без ручных шагов).
+WG_AUTO_PROVISION: bool = True
+WG_DEFAULT_PEER_NAME: str = "iphone"
 WG_KEEPALIVE_SECONDS: int = 25
-DOCKER_WG_START_TIMEOUT_SECONDS: float = 20.0
+# 1280 — безопаснее для LTE/CGNAT (wg-easy часто ставят так на мобильных).
+WG_CLIENT_MTU: int = 1280
+WG_START_TIMEOUT_SECONDS: float = 45.0
+WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
+# WAN для MASQUERADE; runtime ещё раз определяет через default route.
+WG_DOCKER_WAN_IFACE: str = "eth0"
+WG_NETWORK_MODE: str = "native"
 
 WG_SERVER_CONFIG_TABLE_NAME: str = "wg_server_config"
 EXPECTED_WG_SERVER_CONFIG_COLUMNS: dict[str, str] = {
@@ -164,6 +175,7 @@ EXPECTED_WG_PEERS_COLUMNS: dict[str, str] = {
     "name": "TEXT NOT NULL UNIQUE",
     "private_key": "TEXT NOT NULL",
     "public_key": "TEXT NOT NULL",
+    "preshared_key": "TEXT NOT NULL DEFAULT ''",
     "allocated_ip": "TEXT NOT NULL UNIQUE",
     "config_text": "TEXT NOT NULL",
     "qr_filename": "TEXT NOT NULL",
@@ -171,37 +183,51 @@ EXPECTED_WG_PEERS_COLUMNS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Xray / VLESS+REALITY VPN
+# Xray / VLESS+REALITY VPN (native binary + systemd)
 # ---------------------------------------------------------------------------
 XRAY_CONFIG_DIR: Path = DATA_DIR / "xray"
 XRAY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-XRAY_DOCKER_IMAGE: str = "teddysun/xray:latest"
-XRAY_CONTAINER_NAME: str = "xray_server"
+XRAY_BINARY_PATH: str = "/usr/local/bin/xray"
+XRAY_SYSTEM_CONF_PATH: str = "/usr/local/etc/xray/config.json"
+XRAY_SYSTEMD_UNIT: str = "xray.service"
+XRAY_SYSTEMD_UNIT_PATH: str = "/etc/systemd/system/xray.service"
 XRAY_DEFAULT_PORT: int = 8443
-# ВАЖНО: dest/serverName должны указывать на реальный сайт с TLS-сертификатом,
-# чей TLS Certificate record укладывается в жёсткий лимит Xray-core (8192 байта,
-# https://github.com/XTLS/Xray-core/issues/6356). www.microsoft.com ранее стоял
-# тут по умолчанию, но у него из-за OCSP-stapling запись сертификата ~8273 байта —
-# REALITY-хендшейк со ЛЮБЫМ клиентом гарантированно проваливался с ошибкой
-# "processed invalid connection ... handshake did not complete successfully",
-# независимо от корректности ключей/UUID/shortId. Проверено end-to-end реальным
-# VLESS-клиентом: с www.cloudflare.com (маленький сертификат) туннель поднимается
-# и передаёт трафик; с www.microsoft.com — нет, ни разу. Если меняете dest на
-# что-то своё — выбирайте популярный сайт с TLS 1.3 и небольшим сертификатом
-# (без длинных цепочек/OCSP-stapling), иначе получите ту же ошибку.
+# ВАЖНО: dest/serverName — сайт с небольшим TLS-сертификатом (<8192 байт
+# Certificate record). www.cloudflare.com проверен; www.microsoft.com — нет.
 XRAY_DEFAULT_DEST: str = "www.cloudflare.com:443"
 XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
-# Пусто = "no flow" (обычный REALITY без XTLS Vision). Есть подтверждённые
-# случаи, когда именно паттерн трафика xtls-rprx-vision (не REALITY в целом)
-# избирательно блокируется DPI в некоторых регионах, хотя обычный TLS-трафик
-# проходит нормально (см. github.com/XTLS/Xray-core/issues/1615). Vision даёт
-# прирост производительности за счёт Linux splice(), но в приоритете сначала
-# факт работоспособности, а не скорость — поэтому по умолчанию выключен.
-# Включить обратно: XRAY_FLOW = "xtls-rprx-vision".
-XRAY_FLOW: str = ""
-DOCKER_XRAY_START_TIMEOUT_SECONDS: float = 20.0
+# Официальный режим VLESS+REALITY + Vision.
+XRAY_FLOW: str = "xtls-rprx-vision"
+# Xray-core >= 26.7.11 при пустом minClientVer подставляет 26.3.27 и режет
+# обычные мобильные клиенты (TLS «ок», прокси-байт 0). Явно держим низкий порог.
+XRAY_MIN_CLIENT_VER: str = "1.0.0"
+XRAY_START_TIMEOUT_SECONDS: float = 20.0
 XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
+
+# ---------------------------------------------------------------------------
+# Host firewall / sysctl (nftables)
+# ---------------------------------------------------------------------------
+NFT_TABLE_NAME: str = "mtproxy-panel"
+NFT_RULES_PATH: str = "/etc/nftables.d/mtproxy-panel.nft"
+SYSCTL_FORWARD_PATH: str = "/etc/sysctl.d/99-mtproxy-panel-forward.conf"
+WG_NAT_HELPER_PATH: str = "/usr/local/sbin/mtproxy-wg-nat.sh"
+# Клиентам только IPv4. На Windows AllowedIPs=0.0.0.0/0 часто НЕ
+# перехватывает default route (адаптер есть, gateway 0.0.0.0, ping мёртв,
+# transfer ~1 KiB). Два /1 покрывают весь IPv4 и стабильно ставят маршруты.
+WG_CLIENT_ALLOWED_IPS: str = "0.0.0.0/1, 128.0.0.0/1"
+# /24 на клиенте: Windows показывает нормальную маску; /32 + gateway 0.0.0.0
+# путает диагностику и иногда маршрутизацию.
+WG_CLIENT_ADDRESS_PREFIX: str = "24"
+
+# Ротация docker-логов только для MTProxy-контейнеров.
+DOCKER_LOG_CONFIG: dict = {
+    "type": "json-file",
+    "config": {
+        "max-size": "10m",
+        "max-file": "1",
+    },
+}
 
 XRAY_SERVER_CONFIG_TABLE_NAME: str = "xray_server_config"
 EXPECTED_XRAY_SERVER_CONFIG_COLUMNS: dict[str, str] = {

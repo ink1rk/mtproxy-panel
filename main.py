@@ -68,15 +68,19 @@ logger = logging.getLogger(__name__)
 
 def _ensure_vpn_servers_running() -> None:
     """
-    Если WireGuard и/или Xray уже были настроены ранее — поднимает их
-    контейнеры при старте панели (например, после перезагрузки сервера).
-    Ошибки не должны мешать запуску самой панели, поэтому перехватываются
-    и только логируются.
+    WireGuard: авто-сервер + peer с QR (ensure_ready).
+    Xray: поднимает, если уже настроен.
+    Ошибки только логируются — панель должна стартовать.
     """
     try:
         from vpn_service import VpnServiceError, WireGuardService
 
-        WireGuardService().ensure_running_if_configured()
+        peer = WireGuardService().ensure_ready()
+        if peer is not None:
+            logger.info(
+                "WireGuard готов: peer=%s ip=%s qr=%s",
+                peer.name, peer.allocated_ip, peer.qr_filename,
+            )
     except VpnServiceError as exc:
         logger.warning("WireGuard-сервер не удалось поднять при старте: %s", exc)
     except Exception:  # noqa: BLE001 — сбой VPN-автозапуска не должен ронять панель
