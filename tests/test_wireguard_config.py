@@ -41,23 +41,21 @@ class WireGuardConfigTests(unittest.TestCase):
         self.assertIn("AllowedIPs = 10.66.0.2/32", conf)
 
     def test_client_matches_wg_easy_shape(self) -> None:
-        self.assertEqual(config.WG_CLIENT_ALLOWED_IPS, "0.0.0.0/1, 128.0.0.0/1")
-        self.assertEqual(config.WG_CLIENT_MTU, 1280)
+        self.assertEqual(config.WG_CLIENT_ALLOWED_IPS, "0.0.0.0/0, ::/0")
         conf = wc.render_client_config(
             client_private_key="CPRIV",
             client_allocated_ip="10.66.0.2",
             server_public_key="SPUB",
             server_endpoint_ip="72.56.92.22",
             server_listen_port=51820,
-            dns="1.1.1.1",
+            dns="8.8.8.8, 1.1.1.1",
             subnet="10.66.0.0/24",
             preshared_key="PSK",
         )
         self.assertIn("Address = 10.66.0.2/24", conf)
         self.assertIn("PresharedKey = PSK", conf)
-        self.assertIn("AllowedIPs = 0.0.0.0/1, 128.0.0.0/1", conf)
-        self.assertNotIn("::/0", conf)
-        self.assertIn("MTU = 1280", conf)
+        self.assertIn("AllowedIPs = 0.0.0.0/0, ::/0", conf)
+        self.assertNotIn("MTU", conf)
         self.assertIn("PersistentKeepalive = 25", conf)
         self.assertIn("Endpoint = 72.56.92.22:51820", conf)
 

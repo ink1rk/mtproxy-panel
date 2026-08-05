@@ -118,16 +118,16 @@ class WireGuardManager:
             logger.warning("sysctl persist: %s", exc)
 
     def _ensure_nat(self, *, subnet: str, listen_port: int) -> None:
+        """
+        PostUp ровно как у проверенного годами рабочего wg-easy
+        (MASQUERADE, не SNAT на статичный IP — самовосстанавливается
+        при смене DHCP-адреса). Единственное отличие от wg-easy: там WG
+        живёт в отдельном netns контейнера, поэтому DOCKER-USER не нужен;
+        у нас wg0 на хосте — Docker ставит FORWARD policy DROP, поэтому
+        явный ACCEPT для wg0 обязателен.
+        """
         wan = detect_wan_interface()
         network_cidr = subnet if "/" in subnet else f"{subnet}/24"
-        # Публичный IP для SNAT (стабильнее MASQUERADE на некоторых VPS).
-        src_ip = ""
-        addr = host_exec.run(
-            ["bash", "-c", f"ip -4 -o addr show dev {wan} | awk '{{print $4; exit}}'"],
-            check=False,
-        )
-        if addr.ok and addr.stdout.strip():
-            src_ip = addr.stdout.strip().split("/")[0]
 
         script = f"""
 set -e
@@ -140,25 +140,16 @@ apply() {{
     $IPT -C DOCKER-USER -i wg0 -j ACCEPT 2>/dev/null || $IPT -I DOCKER-USER 1 -i wg0 -j ACCEPT
     $IPT -C DOCKER-USER -o wg0 -j ACCEPT 2>/dev/null || $IPT -I DOCKER-USER 1 -o wg0 -j ACCEPT
   fi
-  if [ -n "{src_ip}" ]; then
-    $IPT -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j SNAT --to-source {src_ip} 2>/dev/null \\
-      || $IPT -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} -j SNAT --to-source {src_ip}
-  else
-    $IPT -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE 2>/dev/null \\
-      || $IPT -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} -j MASQUERADE
-  fi
+  $IPT -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE 2>/dev/null \\
+    || $IPT -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} -j MASQUERADE
   $IPT -C INPUT -p udp -m udp --dport {listen_port} -j ACCEPT 2>/dev/null \\
     || $IPT -I INPUT 1 -p udp -m udp --dport {listen_port} -j ACCEPT
-  $IPT -C FORWARD -i wg0 -p icmp -j ACCEPT 2>/dev/null || $IPT -I FORWARD 1 -i wg0 -p icmp -j ACCEPT
-  $IPT -C FORWARD -o wg0 -p icmp -j ACCEPT 2>/dev/null || $IPT -I FORWARD 1 -o wg0 -p icmp -j ACCEPT
-  $IPT -t mangle -C FORWARD -i wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
-    || $IPT -t mangle -A FORWARD -i wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 }}
 for IPT in iptables iptables-nft iptables-legacy; do
   command -v "$IPT" >/dev/null 2>&1 || continue
   apply "$IPT" || true
 done
-echo NAT_OK wan={wan} src={src_ip or 'masq'} port={listen_port}
+echo NAT_OK wan={wan} port={listen_port}
 """
         # Persist helper for boot / docker restart
         helper = (

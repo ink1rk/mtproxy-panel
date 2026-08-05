@@ -111,7 +111,11 @@ def render_client_config(
     subnet: str = config.WG_DEFAULT_SUBNET,
     preshared_key: str = "",
 ) -> str:
-    """Клиент под Windows/iOS: Address /24, AllowedIPs двумя /1."""
+    """
+    Клиент — как у проверенного годами рабочего wg-easy: Address /24,
+    без явного MTU, AllowedIPs полный (v4+v6). Никакой магии, максимум
+    совместимости с официальными приложениями WireGuard.
+    """
     del subnet
     prefix = config.WG_CLIENT_ADDRESS_PREFIX
     lines = [
@@ -119,7 +123,6 @@ def render_client_config(
         f"PrivateKey = {client_private_key}",
         f"Address = {client_allocated_ip}/{prefix}",
         f"DNS = {dns}",
-        f"MTU = {config.WG_CLIENT_MTU}",
         "",
         "[Peer]",
         f"PublicKey = {server_public_key}",

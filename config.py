@@ -144,13 +144,17 @@ WG_INTERFACE_NAME: str = "wg0"
 WG_SYSTEMD_UNIT: str = "wg-quick@wg0.service"
 WG_DEFAULT_PORT: int = 443
 WG_DEFAULT_SUBNET: str = "10.8.0.0/24"
-WG_DEFAULT_DNS: str = "1.1.1.1"
+# 8.8.8.8 первым: на части сетей 1.1.1.1 сам по себе нестабилен/фильтруется.
+# Совпадает с проверенным годами рабочим wg-easy сервером пользователя.
+WG_DEFAULT_DNS: str = "8.8.8.8, 1.1.1.1"
 # Авто: при старте панели поднять WG + создать peer с QR (без ручных шагов).
 WG_AUTO_PROVISION: bool = True
 WG_DEFAULT_PEER_NAME: str = "iphone"
 WG_KEEPALIVE_SECONDS: int = 25
-# 1280 — безопаснее для LTE/CGNAT (wg-easy часто ставят так на мобильных).
-WG_CLIENT_MTU: int = 1280
+# Без явного MTU в клиентском конфиге — как в проверенном годами рабочем
+# wg-easy (клиент/ОС сами подбирают MTU). Раньше форсировали 1280 —
+# на реальных телефонах (WiFi и мобильный интернет) это совпадало с
+# "handshake есть, трафика почти нет"; референсный сервер MTU не трогает.
 WG_START_TIMEOUT_SECONDS: float = 45.0
 WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
 # WAN для MASQUERADE; runtime ещё раз определяет через default route.
@@ -215,12 +219,12 @@ NFT_TABLE_NAME: str = "mtproxy-panel"
 NFT_RULES_PATH: str = "/etc/nftables.d/mtproxy-panel.nft"
 SYSCTL_FORWARD_PATH: str = "/etc/sysctl.d/99-mtproxy-panel-forward.conf"
 WG_NAT_HELPER_PATH: str = "/usr/local/sbin/mtproxy-wg-nat.sh"
-# Клиентам только IPv4. На Windows AllowedIPs=0.0.0.0/0 часто НЕ
-# перехватывает default route (адаптер есть, gateway 0.0.0.0, ping мёртв,
-# transfer ~1 KiB). Два /1 покрывают весь IPv4 и стабильно ставят маршруты.
-WG_CLIENT_ALLOWED_IPS: str = "0.0.0.0/1, 128.0.0.0/1"
-# /24 на клиенте: Windows показывает нормальную маску; /32 + gateway 0.0.0.0
-# путает диагностику и иногда маршрутизацию.
+# Полный default route (IPv4 + IPv6) — ровно как у проверенного годами
+# рабочего wg-easy сервера (41+ ГБ трафика с реального iPhone). Split
+# 0.0.0.0/1+128.0.0.0/1 пробовали для Windows — не решило проблему и
+# не нужно: официальные клиенты (Windows/iOS/Android) сами исключают
+# маршрут до Endpoint при получении литерального 0.0.0.0/0.
+WG_CLIENT_ALLOWED_IPS: str = "0.0.0.0/0, ::/0"
 WG_CLIENT_ADDRESS_PREFIX: str = "24"
 
 # Ротация docker-логов только для MTProxy-контейнеров.
