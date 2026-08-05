@@ -12,118 +12,16 @@
         href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css"
         rel="stylesheet"
     >
-    <style>
-        :root {
-            --brand: #4f8cff;
-            --brand-soft: rgba(79, 140, 255, 0.14);
-            --surface: #171b23;
-            --surface-2: #1e2430;
-            --border-soft: #2a3140;
-        }
-        body {
-            background:
-                radial-gradient(circle at 15% -10%, rgba(79, 140, 255, 0.16), transparent 45%),
-                radial-gradient(circle at 90% 0%, rgba(120, 90, 255, 0.10), transparent 40%),
-                #0f1218;
-            min-height: 100vh;
-        }
-        .navbar-brand-panel {
-            font-weight: 700;
-            letter-spacing: -0.02em;
-        }
-        .navbar-brand-panel .bi {
-            color: var(--brand);
-        }
-        .card-surface {
-            background: var(--surface);
-            border: 1px solid var(--border-soft);
-            border-radius: 14px;
-        }
-        .stat-card {
-            background: var(--surface-2);
-            border: 1px solid var(--border-soft);
-            border-radius: 14px;
-            padding: 1.1rem 1.3rem;
-        }
-        .stat-value {
-            font-size: 1.9rem;
-            font-weight: 700;
-            line-height: 1;
-        }
-        .stat-label {
-            color: #8a93a6;
-            font-size: 0.82rem;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .table-modern {
-            --bs-table-bg: transparent;
-        }
-        .table-modern thead th {
-            color: #8a93a6;
-            font-size: 0.76rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            border-bottom: 1px solid var(--border-soft);
-            font-weight: 600;
-            cursor: pointer;
-            user-select: none;
-        }
-        .table-modern thead th:hover {
-            color: #d7dce5;
-        }
-        .table-modern td {
-            border-bottom: 1px solid var(--border-soft);
-            vertical-align: middle;
-        }
-        .badge-status {
-            font-weight: 600;
-            padding: 0.4em 0.7em;
-        }
-        .mono {
-            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-            font-size: 0.82rem;
-        }
-        .copy-btn {
-            cursor: pointer;
-        }
-        .qr-thumb {
-            border-radius: 8px;
-            background: #fff;
-            padding: 3px;
-        }
-        .brand-gradient-btn {
-            background: linear-gradient(135deg, #4f8cff, #7a5cff);
-            border: none;
-        }
-        .brand-gradient-btn:hover {
-            filter: brightness(1.08);
-        }
-        .form-check-inline .form-check-input {
-            margin-top: 0.3em;
-        }
-        .toast-container {
-            z-index: 1080;
-        }
-        /* Явные цвета для нативного <select>/<option>: на некоторых ОС/браузерах
-           опции рендерятся системными (не CSS) цветами и в тёмной теме могут
-           стать нечитаемыми (светлый текст на светлом фоне). Фиксируем цвета
-           жёстко, чтобы список был виден при любых системных настройках. */
-        select.form-select {
-            background-color: var(--surface-2);
-            color: #e9ecef;
-        }
-        select.form-select option {
-            background-color: #1e2430;
-            color: #e9ecef;
-        }
-        .opacity-50 {
-            opacity: 0.55;
-        }
-    </style>
+    <link href="/static/css/theme.css" rel="stylesheet">
     {% block extra_head %}{% endblock %}
 </head>
 <body>
+<div id="panelProgress" aria-hidden="true"></div>
 {% block body %}{% endblock %}
+
+<!-- Общие зависимости: подключены один раз здесь, а не в каждом шаблоне -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/js/theme.js"></script>
+{% block extra_scripts %}{% endblock %}
 </body>
 </html>

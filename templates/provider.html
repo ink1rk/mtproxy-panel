@@ -5,16 +5,25 @@
 
 {{ navbar(provider_key, username) }}
 
-<div class="container-fluid px-4 py-4">
+<main class="app-content container-fluid px-3 px-md-4 py-4">
+
+    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4 u-fade-up">
+        <div>
+            <h1 class="h4 mb-0">{{ provider.display_name if provider else provider_key }}</h1>
+            <p class="text-secondary small mb-0">Управление сервером и устройствами</p>
+        </div>
+    </div>
 
     {% if not configured %}
     <!-- ============== Сервер ещё не настроен: форма первичной настройки ============== -->
     <div class="row justify-content-center">
         <div class="col-lg-6">
-            <div class="card-surface p-4 p-md-5">
+            <div class="card-surface p-4 p-md-5 u-fade-up">
                 <div class="text-center mb-4">
-                    <i class="bi {{ provider.icon if provider else 'bi-shield-lock' }}" style="font-size: 2.2rem; color: var(--brand);"></i>
-                    <h1 class="h4 mt-2 mb-0">Настройка {{ provider.display_name if provider else provider_key }}</h1>
+                    <span class="stat-card-icon is-brand mx-auto" style="width:56px;height:56px;font-size:1.5rem;">
+                        <i class="bi {{ provider.icon if provider else 'bi-shield-lock' }}"></i>
+                    </span>
+                    <h1 class="h4 mt-3 mb-0">Настройка {{ provider.display_name if provider else provider_key }}</h1>
                     <p class="text-secondary small mb-0">
                         Сервер ещё не настроен. Заполните параметры один раз —
                         ключи сервера будут сгенерированы автоматически.
@@ -45,7 +54,7 @@
     {% if primary_client %}
     <div class="row justify-content-center mb-4">
         <div class="col-lg-5">
-            <div class="card-surface p-4 p-md-5 text-center">
+            <div class="card-surface p-4 p-md-5 text-center u-fade-up">
                 <p class="text-secondary small mb-2">Отсканируй в приложении {{ provider.display_name if provider else '' }}</p>
                 <h1 class="h4 mb-3">{{ primary_client.name }}</h1>
                 <img src="{{ primary_client.qr_url }}?t={{ primary_client.created_at }}"
@@ -65,8 +74,7 @@
                 {% endif %}
 
                 {% if provider_key == "wireguard" %}
-                <div class="text-start small text-secondary mt-4 p-3 rounded"
-                     style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
+                <div class="info-panel is-warning text-start small text-secondary mt-4">
                     <strong class="text-warning">Если handshake есть, а интернета нет</strong>
                     <ol class="mb-0 mt-2 ps-3">
                         <li><strong>Windows:</strong> отключи/удали Kerio, Cisco AnyConnect, корпоративный VPN — они режут WireGuard через WFP.</li>
@@ -81,11 +89,10 @@
                 </div>
                 {% elif provider_key == "vless" %}
                 <div class="d-flex justify-content-center gap-2 mb-2 mt-3">
-                    <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ primary_client.secondary_value }}" title="Скопировать ссылку"></i>
+                    <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ primary_client.secondary_value }}" data-bs-toggle="tooltip" title="Скопировать ссылку"></i>
                     <span class="text-secondary small">скопировать ссылку</span>
                 </div>
-                <div class="text-start small text-secondary mt-3 p-3 rounded"
-                     style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
+                <div class="info-panel is-info text-start small text-secondary mt-3">
                     <strong class="text-info">Приложения</strong>
                     <ul class="mb-0 mt-2 ps-3">
                         <li><strong>Android:</strong> v2rayNG, NekoBox</li>
@@ -104,15 +111,19 @@
     </div>
     {% endif %}
 
-    <div class="row g-3 mb-4">
+    <div class="row g-3 mb-4 u-stagger">
         <div class="col-6 col-md-3">
             <div class="stat-card">
+                <span class="stat-card-icon is-brand"><i class="bi bi-hdd-stack"></i></span>
                 <div class="stat-value">{{ clients|length }}</div>
                 <div class="stat-label">Устройств</div>
             </div>
         </div>
         <div class="col-6 col-md-3">
             <div class="stat-card">
+                <span class="stat-card-icon {% if status == 'running' %}is-success{% else %}is-warning{% endif %}">
+                    <i class="bi {% if status == 'running' %}bi-check-circle{% else %}bi-hourglass-split{% endif %}"></i>
+                </span>
                 <div class="stat-value {% if status == 'running' %}text-success{% else %}text-warning{% endif %}" id="providerStatus">
                     {{ status }}
                 </div>
@@ -121,6 +132,7 @@
         </div>
         <div class="col-6 col-md-3">
             <div class="stat-card">
+                <span class="stat-card-icon is-info"><i class="bi bi-geo-alt"></i></span>
                 <div class="stat-value mono" style="font-size: 1.1rem;">{{ endpoint }}</div>
                 <div class="stat-label">Адрес подключения</div>
             </div>
@@ -145,8 +157,8 @@
     </div>
 
     {% if diagnostics %}
-    <div class="card-surface p-4 mb-4">
-        <h2 class="h6 mb-3"><i class="bi bi-activity"></i> Диагностика</h2>
+    <div class="card-surface p-4 mb-4 u-fade-up">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2"><i class="bi bi-activity text-brand"></i> Диагностика</h2>
         <div class="table-responsive mb-3">
             <table class="table table-modern table-sm mb-0">
                 <thead>
@@ -170,8 +182,7 @@
             </table>
         </div>
         {% for client_diag in diagnostics.peers %}
-        <div class="p-3 rounded mb-2"
-             style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
+        <div class="info-panel {% if client_diag.severity == 'ok' %}is-success{% elif client_diag.severity == 'warning' %}is-warning{% else %}is-danger{% endif %} mb-2">
             <div class="d-flex align-items-center gap-2 mb-1">
                 {% if client_diag.severity == 'ok' %}
                 <span class="badge text-bg-success">OK</span>
@@ -195,12 +206,12 @@
     {% endif %}
 
     {% if clients|length == 0 %}
-    <div class="card-surface p-5 text-center text-secondary">
-        <i class="bi bi-inboxes" style="font-size: 2rem;"></i>
-        <p class="mb-0 mt-2">Устройств пока нет. Нажмите «Добавить устройство».</p>
+    <div class="card-surface empty-state u-fade-up">
+        <i class="bi bi-inboxes d-block mb-2"></i>
+        <p class="mb-0">Устройств пока нет. Нажмите «Добавить устройство».</p>
     </div>
     {% else %}
-    <div class="card-surface p-0">
+    <div class="card-surface p-0 u-fade-up">
         <div class="table-responsive">
             <table class="table table-modern mb-0">
                 <thead>
@@ -221,8 +232,8 @@
                         <td class="mono">{{ client.primary_value }}</td>
                         <td>
                             <div class="d-flex align-items-center gap-2">
-                                <code class="mono text-truncate" style="max-width: 160px;" title="{{ client.secondary_value }}">{{ client.secondary_value }}</code>
-                                <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ client.secondary_value }}" title="Скопировать"></i>
+                                <code class="mono text-truncate" style="max-width: 160px;" data-bs-toggle="tooltip" title="{{ client.secondary_value }}">{{ client.secondary_value }}</code>
+                                <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ client.secondary_value }}" data-bs-toggle="tooltip" title="Скопировать"></i>
                             </div>
                         </td>
                         <td class="text-secondary small">{{ client.connection_label or "нет подключений" }}</td>
@@ -250,7 +261,7 @@
     </div>
     {% endif %}
     {% endif %}
-</div>
+</main>
 
 <!-- Модалка: добавить устройство (только имя — всё остальное автоматически) -->
 <div class="modal fade" id="addClientModal" tabindex="-1">
@@ -334,7 +345,6 @@
     {% endif %}
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     const deleteClientModal = document.getElementById('deleteClientModal');
     if (deleteClientModal) {

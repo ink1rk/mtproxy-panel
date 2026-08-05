@@ -5,25 +5,35 @@
 
 {{ navbar('proxies', username) }}
 
-<div class="container-fluid px-4 py-4">
+<main class="app-content container-fluid px-3 px-md-4 py-4">
 
-    <div class="row g-3 mb-4">
+    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4 u-fade-up">
+        <div>
+            <h1 class="h4 mb-0">MTProxy</h1>
+            <p class="text-secondary small mb-0">Управление Telegram-прокси контейнерами</p>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-4 u-stagger">
         {% set total_count = total_count | default(proxies | length, true) %}
         {% set running_count = running_count | default(0, true) %}
         <div class="col-6 col-md-3">
             <div class="stat-card">
+                <span class="stat-card-icon is-brand"><i class="bi bi-router"></i></span>
                 <div class="stat-value" id="statTotal">{{ total_count }}</div>
                 <div class="stat-label">Всего прокси</div>
             </div>
         </div>
         <div class="col-6 col-md-3">
             <div class="stat-card">
+                <span class="stat-card-icon is-success"><i class="bi bi-check-circle"></i></span>
                 <div class="stat-value text-success" id="statRunning">{{ running_count }}</div>
                 <div class="stat-label">Запущено</div>
             </div>
         </div>
         <div class="col-6 col-md-3">
             <div class="stat-card">
+                <span class="stat-card-icon is-warning"><i class="bi bi-exclamation-triangle"></i></span>
                 <div class="stat-value text-warning" id="statProblem">{{ total_count - running_count }}</div>
                 <div class="stat-label">Проблемные</div>
             </div>
@@ -44,12 +54,12 @@
     </div>
 
     {% if proxies|length == 0 %}
-    <div class="card-surface p-5 text-center text-secondary">
-        <i class="bi bi-inboxes" style="font-size: 2rem;"></i>
-        <p class="mb-0 mt-2">Прокси пока не созданы. Нажмите «Создать прокси», чтобы добавить первый.</p>
+    <div class="card-surface empty-state u-fade-up">
+        <i class="bi bi-inboxes d-block mb-2"></i>
+        <p class="mb-0">Прокси пока не созданы. Нажмите «Создать прокси», чтобы добавить первый.</p>
     </div>
     {% else %}
-    <div class="card-surface p-0">
+    <div class="card-surface p-0 u-fade-up">
         <div class="table-responsive">
             <table class="table table-modern mb-0" id="proxyTable">
                 <thead>
@@ -88,8 +98,8 @@
                         <td>
                             <div class="d-flex align-items-center gap-2">
                                 <span class="badge text-bg-secondary">{{ proxy.secret_mode_label }}</span>
-                                <code class="mono text-truncate" style="max-width: 160px;" title="{{ proxy.secret }}">{{ proxy.secret }}</code>
-                                <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ proxy.secret }}" title="Скопировать secret"></i>
+                                <code class="mono text-truncate" style="max-width: 160px;" data-bs-toggle="tooltip" title="{{ proxy.secret }}">{{ proxy.secret }}</code>
+                                <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ proxy.secret }}" data-bs-toggle="tooltip" title="Скопировать secret"></i>
                             </div>
                             {% if proxy.tls_domain %}
                             <div class="text-secondary small mt-1">домен: {{ proxy.tls_domain }}</div>
@@ -98,11 +108,11 @@
                         <td class="text-secondary small">{{ proxy.created_at[:19].replace("T", " ") }}</td>
                         <td>
                             <div class="d-flex gap-2">
-                                <a href="{{ proxy.tg_link }}" class="btn btn-sm btn-outline-primary" title="Открыть в Telegram">
+                                <a href="{{ proxy.tg_link }}" class="btn btn-sm btn-outline-primary" data-bs-toggle="tooltip" title="Открыть в Telegram">
                                     <i class="bi bi-telegram"></i>
                                 </a>
                                 <i class="bi bi-link-45deg copy-btn btn btn-sm btn-outline-secondary d-flex align-items-center"
-                                   data-copy="{{ proxy.https_link }}" title="Скопировать https-ссылку"></i>
+                                   data-copy="{{ proxy.https_link }}" data-bs-toggle="tooltip" title="Скопировать https-ссылку"></i>
                             </div>
                         </td>
                         <td>
@@ -122,7 +132,7 @@
         </div>
     </div>
     {% endif %}
-</div>
+</main>
 
 <!-- Модалка: создать прокси -->
 <div class="modal fade" id="createModal" tabindex="-1">
@@ -231,7 +241,6 @@
     {% endif %}
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     // --- Переключение поля домена для fake-TLS ---
     const secretModeRadios = document.querySelectorAll('input[name="secret_mode"]');
