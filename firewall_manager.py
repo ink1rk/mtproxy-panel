@@ -106,6 +106,12 @@ class FirewallManager:
 
         # WG NAT: PostUp/ensure_nat в Docker (при host net — это netns хоста).
         # Здесь только nft input для портов — без второго MASQUERADE в nft.
+        if xray_port is not None:
+            try:
+                ensure_tcp_mss_clamp(port=xray_port)
+            except Exception:  # noqa: BLE001 — MSS clamp не критичен для запуска
+                logger.exception("Не удалось применить MSS clamp для Xray")
+
         logger.info(
             "firewall input ready: wg_port=%s xray_port=%s",
             wg_port, xray_port,
@@ -202,6 +208,36 @@ def ensure_tunnel_nat_forward(*, interface: str, subnet: str, listen_port: int, 
         interface, wan, listen_port, backends,
     )
     return {"interface": interface, "wan": wan, "port": listen_port, "backends": backends}
+
+
+def ensure_tcp_mss_clamp(*, port: int, mss: int = 1200) -> None:
+    """
+    Клэмпит MSS в НАШЕМ SYN-ACK для нативного TCP-сервиса (например,
+    Xray/VLESS). На части мобильных/CGNAT-сетей PMTUD сломан (ICMP
+    "fragmentation needed" фильтруется), а initial data-пакет крупнее
+    ~1300-1400 байт до сервера не доходит целиком — REALITY TLS
+    ClientHello (обычно 500-1500 байт) специфично страдает от этого
+    даже при абсолютно корректном конфиге ("failed to read client
+    hello" / "handshake did not complete" в логах, при этом сервер
+    полностью исправен и тот же конфиг работает из другой сети).
+    Ограничение MSS заставляет клиента резать данные на более мелкие
+    TCP-сегменты вместо IP-фрагментации, которая на таких сетях часто
+    просто не проходит.
+    """
+    backends = _iptables_backends()
+    for ipt in backends:
+        _ensure_rule(
+            ipt,
+            [
+                "-t", "mangle", "-A", "OUTPUT", "-p", "tcp", "--sport", str(port),
+                "--tcp-flags", "SYN,ACK", "SYN,ACK", "-j", "TCPMSS", "--set-mss", str(mss),
+            ],
+            [
+                "-t", "mangle", "-C", "OUTPUT", "-p", "tcp", "--sport", str(port),
+                "--tcp-flags", "SYN,ACK", "SYN,ACK", "-j", "TCPMSS", "--set-mss", str(mss),
+            ],
+        )
+    logger.info("TCP MSS clamp (Python): port=%s mss=%s backends=%s", port, mss, backends)
 
 
 def tunnel_nat_status(*, interface: str, subnet: str, listen_port: int, wan: str) -> dict[str, bool]:
