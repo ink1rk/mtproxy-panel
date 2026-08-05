@@ -180,17 +180,20 @@ echo NAT_OK wan={wan}
                 check=False,
             )
             host_exec.systemctl("reset-failed", config.WG_SYSTEMD_UNIT, check=False)
-            up = host_exec.run(["wg-quick", "up", config.WG_INTERFACE_NAME], check=False)
-            if not up.ok and "already exists" not in up.output:
-                host_exec.systemctl("start", config.WG_SYSTEMD_UNIT, check=False)
-                time.sleep(1)
+            # Сначала systemd — unit остаётся active; fallback на wg-quick up.
+            started = host_exec.systemctl("start", config.WG_SYSTEMD_UNIT, check=False)
+            time.sleep(0.5)
+            if not self.is_running():
+                up = host_exec.run(
+                    ["wg-quick", "up", config.WG_INTERFACE_NAME], check=False,
+                )
+                if not up.ok and "already exists" not in up.output:
+                    logger.warning("wg-quick up: %s (systemctl: %s)", up.output, started.output)
             if not self.is_running():
                 raise WireGuardError(
                     "Не удалось поднять wg0. journalctl -u wg-quick@wg0"
                 )
-            # Синхронизируем systemd-статус с уже поднятым iface.
             host_exec.systemctl("reset-failed", config.WG_SYSTEMD_UNIT, check=False)
-            host_exec.systemctl("start", config.WG_SYSTEMD_UNIT, check=False)
 
         self.wait_until_interface_ready()
         self._ensure_nat(subnet=subnet, listen_port=listen_port)
