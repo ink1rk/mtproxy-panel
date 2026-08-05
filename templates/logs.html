@@ -5,8 +5,14 @@
 
 {{ navbar('logs', username) }}
 
-<div class="container-fluid px-4 py-4">
-    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+<main class="app-content container-fluid px-3 px-md-4 py-4">
+
+    <div class="mb-4 u-fade-up">
+        <h1 class="h4 mb-0">Логи</h1>
+        <p class="text-secondary small mb-0">Панель, MTProxy (Docker) и native WireGuard/Xray в реальном времени</p>
+    </div>
+
+    <div class="card-surface p-3 mb-3 d-flex flex-wrap align-items-center gap-2 u-fade-up">
         <select id="logSource" class="form-select" style="max-width: 240px;">
             <option value="panel">Панель (app.log)</option>
         </select>
@@ -35,10 +41,10 @@
         (для Xray — уровень «info» показывает каждое принятое подключение).
     </div>
 
-    <div class="card-surface p-3">
-        <pre id="logOutput" class="mono mb-0" style="max-height: 70vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">Загрузка...</pre>
+    <div class="card-surface p-3 u-fade-up">
+        <pre id="logOutput" class="mono mb-0" style="max-height: 70vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all;"><span class="skeleton d-block mb-2" style="height:14px;width:92%;">.</span><span class="skeleton d-block mb-2" style="height:14px;width:78%;">.</span><span class="skeleton d-block" style="height:14px;width:85%;">.</span></pre>
     </div>
-</div>
+</main>
 
 <script>
     const logOutput = document.getElementById('logOutput');

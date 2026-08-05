@@ -1,0 +1,923 @@
+/*
+ * theme.css — визуальная дизайн-система панели.
+ *
+ * Только оформление: переменные, карточки, кнопки, инпуты, таблицы,
+ * бейджи, модалки, тосты, сайдбар. Ничего здесь не переопределяет
+ * структуру данных/атрибуты, на которые опирается JS (id, data-атрибуты,
+ * классы copy-btn, badge-status, table-modern и т.д. — все сохранены).
+ */
+
+/* ---------------------------------------------------------------------
+   1. Токены дизайн-системы
+   --------------------------------------------------------------------- */
+:root {
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+    --font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+
+    --brand: #4f8cff;
+    --brand-2: #7a5cff;
+    --brand-soft: rgba(79, 140, 255, 0.14);
+    --brand-gradient: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
+
+    --success: #2fd77d;
+    --success-soft: rgba(47, 215, 125, 0.14);
+    --warning: #ffb84d;
+    --warning-soft: rgba(255, 184, 77, 0.14);
+    --danger: #ff5d7a;
+    --danger-soft: rgba(255, 93, 122, 0.14);
+    --info: #37c8e0;
+    --info-soft: rgba(55, 200, 224, 0.14);
+
+    --bg-base: #0a0d13;
+    --surface: rgba(255, 255, 255, 0.035);
+    --surface-2: rgba(255, 255, 255, 0.055);
+    --surface-solid: #151923;
+    --border-soft: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.16);
+
+    --text-primary: #eef1f6;
+    --text-secondary: #8d95a6;
+    --text-muted: #626b7d;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 22px;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 20px 48px -12px rgba(0, 0, 0, 0.55);
+    --shadow-glow: 0 0 0 1px rgba(79, 140, 255, 0.35), 0 8px 32px -8px rgba(79, 140, 255, 0.35);
+
+    --sidebar-w: 252px;
+    --topbar-h: 60px;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ---------------------------------------------------------------------
+   2. База
+   --------------------------------------------------------------------- */
+* {
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    background:
+        radial-gradient(circle at 12% -10%, rgba(79, 140, 255, 0.16), transparent 42%),
+        radial-gradient(circle at 92% 0%, rgba(122, 92, 255, 0.12), transparent 40%),
+        radial-gradient(circle at 50% 110%, rgba(47, 215, 125, 0.05), transparent 45%),
+        var(--bg-base);
+    background-attachment: fixed;
+    letter-spacing: -0.006em;
+    -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    letter-spacing: -0.02em;
+    font-weight: 700;
+}
+
+::selection {
+    background: var(--brand-soft);
+    color: #fff;
+}
+
+/* Custom scrollbar (WebKit) */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.26);
+    background-clip: padding-box;
+}
+
+.text-secondary { color: var(--text-secondary) !important; }
+.text-brand { color: var(--brand) !important; }
+.mono {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    letter-spacing: 0;
+}
+
+/* ---------------------------------------------------------------------
+   3. Анимации
+   --------------------------------------------------------------------- */
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.94) translateY(6px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes shimmer {
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+}
+@keyframes pulseDot {
+    0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+    50% { box-shadow: 0 0 0 4px transparent; opacity: 0.55; }
+}
+@keyframes spinSoft {
+    to { transform: rotate(360deg); }
+}
+@keyframes toastIn {
+    from { opacity: 0; transform: translateY(10px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.u-fade-up {
+    animation: fadeInUp 0.5s var(--ease) both;
+}
+.u-stagger > * { animation: fadeInUp 0.45s var(--ease) both; }
+.u-stagger > *:nth-child(1) { animation-delay: 0.02s; }
+.u-stagger > *:nth-child(2) { animation-delay: 0.07s; }
+.u-stagger > *:nth-child(3) { animation-delay: 0.12s; }
+.u-stagger > *:nth-child(4) { animation-delay: 0.17s; }
+.u-stagger > *:nth-child(5) { animation-delay: 0.22s; }
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* ---------------------------------------------------------------------
+   3b. Верхняя полоса загрузки (аналог NProgress) — управляется theme.js
+   --------------------------------------------------------------------- */
+#panelProgress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 2.5px;
+    width: 0%;
+    background: var(--brand-gradient);
+    box-shadow: 0 0 10px rgba(79, 140, 255, 0.7);
+    z-index: 2000;
+    opacity: 0;
+    transition: width 0.32s var(--ease), opacity 0.25s linear;
+    pointer-events: none;
+}
+#panelProgress.is-active { opacity: 1; }
+
+/* ---------------------------------------------------------------------
+   4. App shell: sidebar + topbar + content
+   --------------------------------------------------------------------- */
+.app-topbar {
+    display: none;
+    position: sticky;
+    top: 0;
+    z-index: 1040;
+    height: var(--topbar-h);
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0 1rem;
+    background: rgba(12, 15, 22, 0.72);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border-bottom: 1px solid var(--border-soft);
+}
+.app-topbar-brand {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.app-topbar-brand i { color: var(--brand); }
+.sidebar-toggle {
+    border: 1px solid var(--border-soft);
+    background: var(--surface);
+    color: var(--text-primary);
+    width: 38px;
+    height: 38px;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.sidebar-toggle:hover { background: var(--surface-2); border-color: var(--border-strong); }
+
+.app-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: var(--sidebar-w);
+    z-index: 1050;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, rgba(18, 22, 32, 0.92), rgba(12, 15, 22, 0.92));
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border-right: 1px solid var(--border-soft);
+    transition: transform 0.32s var(--ease);
+}
+.sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 1.35rem 1.25rem 1rem;
+    font-weight: 800;
+    font-size: 1.05rem;
+    letter-spacing: -0.02em;
+}
+.sidebar-brand .sidebar-brand-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--brand-gradient);
+    color: #fff;
+    font-size: 1.05rem;
+    box-shadow: var(--shadow-md);
+    flex-shrink: 0;
+}
+.sidebar-nav {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    overflow-y: auto;
+}
+.sidebar-section-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding: 0.9rem 0.6rem 0.35rem;
+    font-weight: 700;
+}
+.sidebar-link {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.62rem 0.75rem;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 500;
+    text-decoration: none;
+    position: relative;
+    transition: background 0.18s var(--ease), color 0.18s var(--ease), transform 0.18s var(--ease);
+}
+.sidebar-link i { font-size: 1.02rem; width: 20px; text-align: center; flex-shrink: 0; }
+.sidebar-link:hover {
+    color: var(--text-primary);
+    background: var(--surface-2);
+    transform: translateX(2px);
+}
+.sidebar-link.active {
+    color: #fff;
+    background: var(--brand-gradient);
+    box-shadow: var(--shadow-md);
+}
+.sidebar-link.active i { color: #fff; }
+.sidebar-footer {
+    padding: 0.9rem;
+    border-top: 1px solid var(--border-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+.sidebar-user {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.35rem;
+    border-radius: var(--radius-sm);
+}
+.sidebar-user-trigger {
+    background: transparent;
+    color: var(--text-primary);
+    transition: background 0.2s var(--ease);
+}
+.sidebar-user-trigger:hover { background: var(--surface-2); }
+.sidebar-user-trigger.dropdown-toggle::after {
+    margin-left: auto;
+    color: var(--text-muted);
+}
+.sidebar-footer .dropdown-menu { margin-bottom: 0.5rem; }
+.sidebar-user-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+.sidebar-user-name {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.15;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sidebar-user-role {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 6, 10, 0.55);
+    backdrop-filter: blur(2px);
+    z-index: 1045;
+    opacity: 0;
+    transition: opacity 0.25s var(--ease);
+}
+
+.app-content {
+    margin-left: var(--sidebar-w);
+    /* container-fluid задаёт width:100% от viewport — без явного пересчёта
+       ширины контент вылезал бы за экран вместе с отступом под сайдбар. */
+    width: calc(100% - var(--sidebar-w));
+    max-width: calc(100% - var(--sidebar-w));
+    min-height: 100vh;
+    animation: fadeInUp 0.4s var(--ease) both;
+}
+
+@media (max-width: 991.98px) {
+    .app-topbar { display: flex; }
+    .app-sidebar {
+        transform: translateX(-100%);
+        box-shadow: var(--shadow-lg);
+    }
+    body.sidebar-open .app-sidebar { transform: translateX(0); }
+    body.sidebar-open .sidebar-backdrop { display: block; opacity: 1; }
+    .app-content {
+        margin-left: 0;
+        width: 100%;
+        max-width: 100%;
+    }
+}
+
+/* Страницы без сайдбара (логин) */
+.auth-shell {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    position: relative;
+    overflow: hidden;
+}
+.auth-shell::before,
+.auth-shell::after {
+    content: "";
+    position: absolute;
+    width: 480px;
+    height: 480px;
+    border-radius: 50%;
+    filter: blur(120px);
+    opacity: 0.35;
+    z-index: 0;
+}
+.auth-shell::before { background: var(--brand); top: -180px; left: -140px; }
+.auth-shell::after { background: var(--brand-2); bottom: -200px; right: -160px; }
+
+/* ---------------------------------------------------------------------
+   5. Карточки
+   --------------------------------------------------------------------- */
+.card-surface {
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: border-color 0.25s var(--ease), box-shadow 0.25s var(--ease), transform 0.25s var(--ease);
+}
+
+.stat-card {
+    position: relative;
+    background: linear-gradient(160deg, var(--surface-2), var(--surface));
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    padding: 1.2rem 1.35rem;
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+    /* Карточки в одном .row растягиваются на высоту самой высокой (флекс
+       align-items:stretch по умолчанию у .row) — но растягивается только
+       колонка-обёртка, а не сама .stat-card внутри неё. Без height:100%
+       карточки с более коротким текстом остаются короче соседних —
+       выглядит как "плитки разного размера". */
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    transition: transform 0.28s var(--ease), box-shadow 0.28s var(--ease), border-color 0.28s var(--ease);
+}
+.stat-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--border-strong);
+}
+.stat-card::after {
+    content: "";
+    position: absolute;
+    inset: auto -30% -60% auto;
+    width: 140px;
+    height: 140px;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.06), transparent 70%);
+    pointer-events: none;
+}
+.stat-card-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 0.6rem;
+    font-size: 1.05rem;
+}
+.stat-card-icon.is-brand { background: var(--brand-soft); color: var(--brand); }
+.stat-card-icon.is-success { background: var(--success-soft); color: var(--success); }
+.stat-card-icon.is-warning { background: var(--warning-soft); color: var(--warning); }
+.stat-card-icon.is-danger { background: var(--danger-soft); color: var(--danger); }
+.stat-card-icon.is-info { background: var(--info-soft); color: var(--info); }
+
+.stat-value {
+    font-size: 1.9rem;
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    /* Длинные значения без пробелов (домен+порт вроде addons.mozilla.org:8443)
+       раньше молча обрезались через overflow:hidden карточки — переносим
+       по символам вместо этого, чтобы адрес был виден целиком. */
+    overflow-wrap: anywhere;
+}
+.stat-label {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    margin-top: 0.2rem;
+}
+
+/* Панель действия-плитка (используется вместо простой кнопки в сетке статистики) */
+.action-tile {
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--brand-soft);
+    transition: background 0.25s var(--ease), border-color 0.25s var(--ease), transform 0.2s var(--ease);
+}
+.action-tile:hover { transform: translateY(-3px); }
+
+/* ---------------------------------------------------------------------
+   6. Кнопки
+   --------------------------------------------------------------------- */
+.btn {
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), background-color 0.18s var(--ease), border-color 0.18s var(--ease), filter 0.18s var(--ease);
+}
+.btn:active { transform: translateY(1px) scale(0.985); }
+.btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.35);
+}
+
+.brand-gradient-btn {
+    background: var(--brand-gradient);
+    border: none;
+    box-shadow: 0 6px 18px -6px rgba(79, 140, 255, 0.55);
+}
+.brand-gradient-btn:hover {
+    filter: brightness(1.08);
+    box-shadow: 0 10px 24px -6px rgba(79, 140, 255, 0.65);
+    transform: translateY(-1px);
+}
+
+.btn-outline-secondary,
+.btn-outline-primary,
+.btn-outline-danger {
+    backdrop-filter: blur(6px);
+}
+/* Bootstrap-дефолт для outline-secondary — тусклый #6c757d, рассчитанный на
+   светлый фон. На тёмной теме это выглядит как «тёмная кнопка с тёмным
+   текстом» — почти нечитаемо. Явно задаём наш светлый secondary-цвет. */
+.btn-outline-secondary {
+    --bs-btn-color: var(--text-secondary);
+    --bs-btn-border-color: var(--border-strong);
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-bg: var(--surface-2);
+    --bs-btn-hover-border-color: var(--border-strong);
+    --bs-btn-active-color: #fff;
+    --bs-btn-active-bg: var(--surface-2);
+    --bs-btn-active-border-color: var(--border-strong);
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
+}
+.btn-outline-secondary:hover,
+.btn-outline-secondary:focus {
+    background: var(--surface-2);
+    border-color: var(--border-strong);
+    color: #fff;
+}
+
+/* Ripple-эффект (создаётся JS в theme.js) */
+.btn .ripple {
+    position: absolute;
+    border-radius: 50%;
+    transform: scale(0);
+    animation: rippleAnim 0.6s var(--ease);
+    background: rgba(255, 255, 255, 0.45);
+    pointer-events: none;
+    z-index: 0;
+}
+@keyframes rippleAnim {
+    to { transform: scale(2.6); opacity: 0; }
+}
+
+/* ---------------------------------------------------------------------
+   7. Формы
+   --------------------------------------------------------------------- */
+.form-control,
+.form-select {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.85rem;
+    transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), background-color 0.2s var(--ease);
+}
+.form-control:focus,
+.form-select:focus {
+    background-color: rgba(255, 255, 255, 0.045);
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-soft);
+    color: var(--text-primary);
+}
+.form-control::placeholder { color: var(--text-muted); }
+.form-label { font-weight: 600; letter-spacing: 0.01em; margin-bottom: 0.4rem; }
+.form-text { color: var(--text-muted); font-size: 0.8rem; }
+
+select.form-select { background-color: var(--surface-solid); color: #e9ecef; }
+select.form-select option { background-color: var(--surface-solid); color: #e9ecef; }
+
+.form-check-input {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-color: var(--border-strong);
+}
+.form-check-input:checked {
+    background-color: var(--brand);
+    border-color: var(--brand);
+}
+.form-check-input:focus { box-shadow: 0 0 0 3px var(--brand-soft); }
+
+.input-group-text {
+    background: rgba(255, 255, 255, 0.03) !important;
+    border-color: var(--border-soft) !important;
+    color: var(--text-secondary);
+}
+
+.opacity-50 { opacity: 0.55; }
+
+/* ---------------------------------------------------------------------
+   8. Таблицы
+   --------------------------------------------------------------------- */
+.table-modern {
+    --bs-table-bg: transparent;
+    --bs-table-color: var(--text-primary);
+    margin-bottom: 0;
+}
+.table-modern thead th {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border-soft);
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+    padding: 0.85rem 1rem;
+    background: rgba(255, 255, 255, 0.015);
+    white-space: nowrap;
+}
+.table-modern thead th:hover { color: var(--text-primary); }
+.table-modern thead th:not([data-sort]) { cursor: default; }
+.table-modern td {
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: middle;
+    padding: 0.85rem 1rem;
+    transition: background 0.15s var(--ease);
+}
+.table-modern tbody tr {
+    transition: background 0.15s var(--ease);
+}
+.table-modern tbody tr:hover td {
+    background: rgba(255, 255, 255, 0.028);
+}
+.table-modern tbody tr:last-child td { border-bottom: none; }
+
+/* Строка клиента, который сейчас показан крупно в hero-карточке наверху. */
+.js-client-row.is-hero-active td {
+    background: var(--brand-soft);
+    box-shadow: inset 2px 0 0 var(--brand);
+}
+
+/* ---------------------------------------------------------------------
+   9. Бейджи статуса
+   --------------------------------------------------------------------- */
+.badge-status {
+    font-weight: 600;
+    padding: 0.42em 0.75em 0.42em 0.6em;
+    font-size: 0.74rem;
+    text-transform: capitalize;
+    letter-spacing: 0.01em;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42em;
+    border: 1px solid transparent;
+}
+.badge-status::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+}
+.badge-status.text-bg-success {
+    background: var(--success-soft) !important;
+    color: var(--success) !important;
+    border-color: rgba(47, 215, 125, 0.3);
+}
+.badge-status.text-bg-danger {
+    background: var(--danger-soft) !important;
+    color: var(--danger) !important;
+    border-color: rgba(255, 93, 122, 0.3);
+}
+.badge-status.text-bg-warning {
+    background: var(--warning-soft) !important;
+    color: var(--warning) !important;
+    border-color: rgba(255, 184, 77, 0.3);
+}
+.badge-status.text-bg-warning::before,
+.badge-status.text-bg-success::before {
+    animation: pulseDot 1.8s ease-in-out infinite;
+}
+.badge-status.text-bg-secondary {
+    background: rgba(255, 255, 255, 0.08) !important;
+    color: var(--text-secondary) !important;
+}
+
+.badge { border-radius: 7px; font-weight: 600; letter-spacing: 0.01em; }
+
+/* ---------------------------------------------------------------------
+   10. Модальные окна
+   --------------------------------------------------------------------- */
+.modal-content.card-surface {
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    background: linear-gradient(165deg, rgba(24, 28, 38, 0.96), rgba(15, 18, 26, 0.98));
+}
+.modal.fade .modal-dialog {
+    transform: scale(0.95) translateY(10px);
+    transition: transform 0.28s var(--ease), opacity 0.28s var(--ease);
+}
+.modal.show .modal-dialog { transform: scale(1) translateY(0); }
+.modal-backdrop.show { opacity: 0.65; backdrop-filter: blur(2px); }
+.modal-header, .modal-footer { border-color: var(--border-soft) !important; }
+.modal-title { font-weight: 700; letter-spacing: -0.01em; }
+
+/* ---------------------------------------------------------------------
+   11. Тосты
+   --------------------------------------------------------------------- */
+.toast-container { z-index: 1080; }
+.toast {
+    border-radius: var(--radius-md) !important;
+    box-shadow: var(--shadow-lg);
+    animation: toastIn 0.35s var(--ease);
+    border: 1px solid var(--border-soft) !important;
+    backdrop-filter: blur(14px);
+}
+
+/* ---------------------------------------------------------------------
+   12. Прочие мелкие компоненты
+   --------------------------------------------------------------------- */
+.copy-btn { cursor: pointer; transition: color 0.2s var(--ease), transform 0.15s var(--ease); }
+.copy-btn:hover { transform: scale(1.12); }
+
+.qr-thumb {
+    border-radius: 8px;
+    background: #fff;
+    padding: 3px;
+    transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
+    cursor: zoom-in;
+}
+.qr-thumb:hover {
+    transform: translateY(-2px) scale(1.06);
+    box-shadow: 0 10px 22px -6px rgba(0, 0, 0, 0.55);
+}
+.qr-thumb-lg:hover {
+    /* Большой QR (герой-карточка WG/VLESS) и так хорошо виден —
+       без лишнего "прыжка" при наведении, только курсор zoom-in. */
+    transform: none;
+    box-shadow: none;
+}
+
+/* Лайтбокс: клик по любому QR (в том числе у старых клиентов, не только
+   у последнего созданного) открывает его крупно по центру экрана. */
+.qr-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(4, 6, 10, 0.82);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.25s var(--ease), visibility 0.25s;
+    cursor: zoom-out;
+}
+.qr-lightbox.is-open {
+    opacity: 1;
+    visibility: visible;
+}
+.qr-lightbox-figure {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    transform: scale(0.92) translateY(8px);
+    transition: transform 0.28s var(--ease);
+}
+.qr-lightbox.is-open .qr-lightbox-figure {
+    transform: scale(1) translateY(0);
+}
+.qr-lightbox-img {
+    width: min(340px, 78vw);
+    height: min(340px, 78vw);
+    background: #fff;
+    padding: 22px;
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-lg);
+    cursor: default;
+}
+.qr-lightbox-caption {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.95rem;
+    text-align: center;
+}
+.qr-lightbox-hint {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+.qr-lightbox-close {
+    position: fixed;
+    top: 22px;
+    right: 22px;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s var(--ease), transform 0.2s var(--ease);
+    cursor: pointer;
+}
+.qr-lightbox-close:hover { background: var(--surface); transform: scale(1.06); }
+
+.empty-state {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 3.2rem 1.5rem;
+}
+.empty-state i { font-size: 2.2rem; color: var(--text-muted); }
+
+/* Skeleton loader */
+.skeleton {
+    position: relative;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: var(--radius-sm);
+    color: transparent !important;
+}
+.skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+    background-size: 400px 100%;
+    animation: shimmer 1.4s infinite linear;
+}
+
+/* Мини-лоадер (спиннер) */
+.loader-ring {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.18);
+    border-top-color: var(--brand);
+    animation: spinSoft 0.7s linear infinite;
+    display: inline-block;
+}
+
+/* Тултипы Bootstrap под тёмную тему.
+   Bootstrap 5.3 в [data-bs-theme=dark] считает, что тултип получит СВЕТЛЫЙ
+   фон, и задаёт --bs-tooltip-color тёмным (~#212529). Мы фон переопределили
+   на тёмный (var(--surface-solid)), но цвет текста остался дефолтным —
+   в итоге тёмный текст на тёмном фоне. Переопределяем оба свойства. */
+.tooltip .tooltip-inner {
+    background: var(--surface-solid);
+    color: var(--text-primary);
+    border: 1px solid var(--border-soft);
+    box-shadow: var(--shadow-md);
+    font-size: 0.78rem;
+    padding: 0.4rem 0.65rem;
+}
+.tooltip.bs-tooltip-top .tooltip-arrow::before { border-top-color: var(--surface-solid); }
+.tooltip.bs-tooltip-bottom .tooltip-arrow::before { border-bottom-color: var(--surface-solid); }
+.tooltip.bs-tooltip-start .tooltip-arrow::before { border-left-color: var(--surface-solid); }
+.tooltip.bs-tooltip-end .tooltip-arrow::before { border-right-color: var(--surface-solid); }
+
+/* Dropdown */
+.dropdown-menu {
+    background: var(--surface-solid);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: 0.4rem;
+    animation: scaleIn 0.18s var(--ease);
+}
+.dropdown-item {
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    padding: 0.5rem 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+.dropdown-item:hover, .dropdown-item:focus {
+    background: var(--surface-2);
+    color: var(--text-primary);
+}
+.dropdown-divider { border-color: var(--border-soft); }
+
+hr { border-color: var(--border-soft); opacity: 1; }
+code { color: #c9b8ff; }
+a { color: var(--brand); }
+a:hover { color: #7fb0ff; }
+
+.alert { border-radius: var(--radius-md); border: 1px solid var(--border-soft); }
+
+/* Информационные врезки (подсказки по DPI, список приложений, диагностика клиента) */
+.info-panel {
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    padding: 0.95rem 1.1rem;
+}
+.info-panel.is-warning { border-left-color: var(--warning); }
+.info-panel.is-info { border-left-color: var(--info); }
+.info-panel.is-success { border-left-color: var(--success); }
+.info-panel.is-danger { border-left-color: var(--danger); }

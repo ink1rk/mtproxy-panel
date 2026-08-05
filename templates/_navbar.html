@@ -1,62 +1,65 @@
 {% macro navbar(active, username) %}
-<nav class="navbar navbar-expand border-bottom" style="border-color: var(--border-soft) !important;">
-    <div class="container-fluid px-4">
-        <span class="navbar-brand navbar-brand-panel">
-            <i class="bi bi-shield-lock"></i> Control Panel
-        </span>
-        <ul class="nav nav-pills gap-1">
-            <li class="nav-item">
-                <a class="nav-link {% if active == 'proxies' %}active{% endif %}" href="/">
-                    <i class="bi bi-router"></i> Прокси
-                </a>
-            </li>
-            <li class="nav-item">
-                <a class="nav-link {% if active == 'wireguard' %}active{% endif %}" href="/wireguard">
-                    <i class="bi bi-hdd-network"></i> WireGuard
-                </a>
-            </li>
-            <li class="nav-item">
-                <a class="nav-link {% if active == 'vless' %}active{% endif %}" href="/vless">
-                    <i class="bi bi-diagram-3"></i> VLESS
-                </a>
-            </li>
-            <li class="nav-item">
-                <a class="nav-link {% if active == 'logs' %}active{% endif %}" href="/logs">
-                    <i class="bi bi-journal-text"></i> Логи
-                </a>
-            </li>
-        </ul>
-        <div class="d-flex align-items-center gap-2">
-            <span class="text-secondary small d-none d-sm-inline">
-                <i class="bi bi-person-circle"></i> {{ username }}
-            </span>
-            {% if active == 'proxies' %}
-            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#passwordModal">
-                <i class="bi bi-key"></i> Пароль
+<!-- Мобильный топбар: гамбургер + бренд, сайдбар скрыт за пределами экрана -->
+<header class="app-topbar">
+    <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Открыть меню">
+        <i class="bi bi-list"></i>
+    </button>
+    <span class="app-topbar-brand"><i class="bi bi-shield-lock"></i> Control Panel</span>
+</header>
+
+<div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+<aside class="app-sidebar">
+    <div class="sidebar-brand">
+        <span class="sidebar-brand-icon"><i class="bi bi-shield-lock-fill"></i></span>
+        <span>Control&nbsp;Panel</span>
+    </div>
+
+    <nav class="sidebar-nav">
+        <span class="sidebar-section-label">Сервисы</span>
+        <a class="sidebar-link {% if active == 'proxies' %}active{% endif %}" href="/">
+            <i class="bi bi-router"></i> MTProxy
+        </a>
+        <a class="sidebar-link {% if active == 'wireguard' %}active{% endif %}" href="/wireguard">
+            <i class="bi bi-hdd-network"></i> WireGuard
+        </a>
+        <a class="sidebar-link {% if active == 'vless' %}active{% endif %}" href="/vless">
+            <i class="bi bi-diagram-3"></i> VLESS
+        </a>
+
+        <span class="sidebar-section-label">Система</span>
+        <a class="sidebar-link {% if active == 'logs' %}active{% endif %}" href="/logs">
+            <i class="bi bi-journal-text"></i> Логи
+        </a>
+    </nav>
+
+    <div class="sidebar-footer">
+        <div class="dropdown dropup">
+            <button type="button" class="sidebar-user sidebar-user-trigger w-100 border-0 dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                <span class="sidebar-user-avatar"><i class="bi bi-person-fill"></i></span>
+                <div class="overflow-hidden text-start">
+                    <div class="sidebar-user-name">{{ username }}</div>
+                    <div class="sidebar-user-role">Администратор</div>
+                </div>
             </button>
-            {% endif %}
-            <form method="post" action="/logout" class="d-inline">
-                <button type="submit" class="btn btn-sm btn-outline-danger">
-                    <i class="bi bi-box-arrow-right"></i> Выйти
-                </button>
-            </form>
+            <ul class="dropdown-menu w-100">
+                {% if active == 'proxies' %}
+                <li>
+                    <button type="button" class="dropdown-item" data-bs-toggle="modal" data-bs-target="#passwordModal">
+                        <i class="bi bi-key"></i> Сменить пароль
+                    </button>
+                </li>
+                <li><hr class="dropdown-divider"></li>
+                {% endif %}
+                <li>
+                    <form method="post" action="/logout" class="m-0">
+                        <button type="submit" class="dropdown-item text-danger">
+                            <i class="bi bi-box-arrow-right"></i> Выйти
+                        </button>
+                    </form>
+                </li>
+            </ul>
         </div>
     </div>
-</nav>
-<style>
-    .nav-pills .nav-link {
-        color: #8a93a6;
-        font-size: 0.88rem;
-        padding: 0.4rem 0.9rem;
-        border-radius: 8px;
-    }
-    .nav-pills .nav-link:hover {
-        color: #d7dce5;
-        background: var(--surface-2);
-    }
-    .nav-pills .nav-link.active {
-        color: #fff;
-        background: linear-gradient(135deg, #4f8cff, #7a5cff);
-    }
-</style>
+</aside>
 {% endmacro %}
