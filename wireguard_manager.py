@@ -19,7 +19,7 @@ from pathlib import Path
 
 import config
 import host_exec
-from firewall_manager import detect_wan_interface, ensure_wg_nat_forward
+from firewall_manager import detect_wan_interface, ensure_tunnel_nat_forward
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,9 @@ class WireGuardManager:
         (firewall_manager.ensure_wg_nat_forward), без shell-скриптов.
         """
         wan = detect_wan_interface()
-        ensure_wg_nat_forward(subnet=subnet, listen_port=listen_port, wan=wan)
+        ensure_tunnel_nat_forward(
+            interface=config.WG_INTERFACE_NAME, subnet=subnet, listen_port=listen_port, wan=wan,
+        )
 
     def _relax_apparmor(self) -> None:
         """

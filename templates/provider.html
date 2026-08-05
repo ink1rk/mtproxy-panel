@@ -1,69 +1,70 @@
 {% extends "base.html" %}
 {% from "_navbar.html" import navbar %}
-{% block title %}WireGuard — Control Panel{% endblock %}
+{% block title %}{{ provider.display_name if provider else provider_key }} — Control Panel{% endblock %}
 {% block body %}
 
-{{ navbar('wireguard', username) }}
+{{ navbar(provider_key, username) }}
 
 <div class="container-fluid px-4 py-4">
 
-    {% if server_config is none %}
+    {% if not configured %}
     <!-- ============== Сервер ещё не настроен: форма первичной настройки ============== -->
     <div class="row justify-content-center">
         <div class="col-lg-6">
             <div class="card-surface p-4 p-md-5">
                 <div class="text-center mb-4">
-                    <i class="bi bi-hdd-network" style="font-size: 2.2rem; color: var(--brand);"></i>
-                    <h1 class="h4 mt-2 mb-0">Настройка WireGuard VPN</h1>
+                    <i class="bi {{ provider.icon if provider else 'bi-shield-lock' }}" style="font-size: 2.2rem; color: var(--brand);"></i>
+                    <h1 class="h4 mt-2 mb-0">Настройка {{ provider.display_name if provider else provider_key }}</h1>
                     <p class="text-secondary small mb-0">
                         Сервер ещё не настроен. Заполните параметры один раз —
                         ключи сервера будут сгенерированы автоматически.
                     </p>
                 </div>
-                <form method="post" action="/wireguard/setup">
-                    <label class="form-label small text-secondary">UDP-порт сервера</label>
-                    <input type="number" name="listen_port" class="form-control mb-3"
-                           value="{{ default_port }}" min="1" max="65535" required>
-
-                    <label class="form-label small text-secondary">Внутренняя подсеть VPN</label>
-                    <input type="text" name="subnet" class="form-control mb-3" value="{{ default_subnet }}" required>
-
-                    <label class="form-label small text-secondary">DNS для клиентов</label>
-                    <input type="text" name="dns" class="form-control mb-4" value="{{ default_dns }}" required>
-
-                    <button type="submit" class="btn brand-gradient-btn text-white w-100 py-2">
+                {% if setup_fields %}
+                <form method="post" action="{{ url_prefix }}/setup">
+                    {% for field_name, field_label, field_default, field_type in setup_fields %}
+                    <label class="form-label small text-secondary">{{ field_label }}</label>
+                    <input type="{{ field_type }}" name="{{ field_name }}" class="form-control mb-3"
+                           value="{{ field_default }}" required>
+                    {% endfor %}
+                    <button type="submit" class="btn brand-gradient-btn text-white w-100 py-2 mt-2">
                         Настроить и запустить сервер
                     </button>
                 </form>
+                {% else %}
+                <p class="text-secondary small text-center mb-0">
+                    Сервер настраивается автоматически при следующем заходе на страницу.
+                </p>
+                {% endif %}
             </div>
         </div>
     </div>
 
     {% else %}
     <!-- ============== Сервер настроен: QR сразу, без ручных шагов ============== -->
-    {% if primary_peer %}
+    {% if primary_client %}
     <div class="row justify-content-center mb-4">
         <div class="col-lg-5">
             <div class="card-surface p-4 p-md-5 text-center">
-                <p class="text-secondary small mb-2">Отсканируй в приложении WireGuard</p>
-                <h1 class="h4 mb-3">{{ primary_peer.name }}</h1>
-                <img src="{{ primary_peer.qr_url }}?t={{ primary_peer.created_at }}"
-                     alt="QR WireGuard" width="280" height="280"
+                <p class="text-secondary small mb-2">Отсканируй в приложении {{ provider.display_name if provider else '' }}</p>
+                <h1 class="h4 mb-3">{{ primary_client.name }}</h1>
+                <img src="{{ primary_client.qr_url }}?t={{ primary_client.created_at }}"
+                     alt="QR {{ provider_key }}" width="280" height="280"
                      class="rounded mb-3" style="background:#fff;padding:12px;">
                 <p class="mono small text-secondary mb-2">
-                    {{ server_config.endpoint_ip }}:{{ server_config.listen_port }}
-                    · {{ primary_peer.allocated_ip }}
+                    {{ endpoint }} · {{ primary_client.primary_value }}
                 </p>
                 <p class="small text-secondary mb-3">
-                    {{ connection_labels.get(primary_peer.id, "нет подключений") }}
-                    {% if traffic_labels.get(primary_peer.id) %}
-                    · {{ traffic_labels.get(primary_peer.id) }}
-                    {% endif %}
+                    {{ primary_client.connection_label or "нет подключений" }}
+                    {% if primary_client.traffic_label %} · {{ primary_client.traffic_label }}{% endif %}
                 </p>
-                <a href="/wireguard/peers/{{ primary_peer.id }}/download"
-                   class="btn btn-sm btn-outline-primary">
+                {% if provider_key == "wireguard" %}
+                <a href="{{ url_prefix }}/peers/{{ primary_client.id }}/download" class="btn btn-sm btn-outline-primary">
                     <i class="bi bi-download"></i> Скачать .conf
                 </a>
+                {% endif %}
+
+                {% if provider_key == "wireguard" %}
                 <div class="text-start small text-secondary mt-4 p-3 rounded"
                      style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
                     <strong class="text-warning">Если handshake есть, а интернета нет</strong>
@@ -78,6 +79,26 @@
                             которым режется WireGuard.</li>
                     </ol>
                 </div>
+                {% elif provider_key == "vless" %}
+                <div class="d-flex justify-content-center gap-2 mb-2 mt-3">
+                    <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ primary_client.secondary_value }}" title="Скопировать ссылку"></i>
+                    <span class="text-secondary small">скопировать ссылку</span>
+                </div>
+                <div class="text-start small text-secondary mt-3 p-3 rounded"
+                     style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
+                    <strong class="text-info">Приложения</strong>
+                    <ul class="mb-0 mt-2 ps-3">
+                        <li><strong>Android:</strong> v2rayNG, NekoBox</li>
+                        <li><strong>iOS:</strong> Streisand, FoXray, Shadowrocket</li>
+                        <li><strong>Windows/macOS:</strong> v2rayN, NekoRay</li>
+                    </ul>
+                    <p class="mb-0 mt-2">
+                        Импортируй ссылку/QR — остальное (REALITY, SNI, flow) уже в ссылке.
+                        Этот протокол маскируется под настоящий HTTPS-сайт и работает там,
+                        где WireGuard режет DPI провайдера.
+                    </p>
+                </div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -86,13 +107,13 @@
     <div class="row g-3 mb-4">
         <div class="col-6 col-md-3">
             <div class="stat-card">
-                <div class="stat-value">{{ peers|length }}</div>
+                <div class="stat-value">{{ clients|length }}</div>
                 <div class="stat-label">Устройств</div>
             </div>
         </div>
         <div class="col-6 col-md-3">
             <div class="stat-card">
-                <div class="stat-value {% if status == 'running' %}text-success{% else %}text-warning{% endif %}" id="wgServerStatus">
+                <div class="stat-value {% if status == 'running' %}text-success{% else %}text-warning{% endif %}" id="providerStatus">
                     {{ status }}
                 </div>
                 <div class="stat-label">Статус сервера</div>
@@ -100,22 +121,22 @@
         </div>
         <div class="col-6 col-md-3">
             <div class="stat-card">
-                <div class="stat-value mono" style="font-size: 1.1rem;">{{ server_config.endpoint_ip }}:{{ server_config.listen_port }}</div>
+                <div class="stat-value mono" style="font-size: 1.1rem;">{{ endpoint }}</div>
                 <div class="stat-label">Адрес подключения</div>
             </div>
         </div>
         <div class="col-6 col-md-3 d-flex align-items-stretch">
             <button type="button" class="btn brand-gradient-btn text-white w-100 d-flex align-items-center justify-content-center gap-2"
-                    data-bs-toggle="modal" data-bs-target="#addPeerModal">
+                    data-bs-toggle="modal" data-bs-target="#addClientModal">
                 <i class="bi bi-plus-circle"></i> Добавить устройство
             </button>
         </div>
     </div>
 
     <div class="d-flex gap-2 mb-4">
-        <form method="post" action="/wireguard/restart" class="d-inline">
+        <form method="post" action="{{ url_prefix }}/restart" class="d-inline">
             <button type="submit" class="btn btn-sm btn-outline-secondary">
-                <i class="bi bi-arrow-clockwise"></i> Почини (переприменить NAT/FORWARD)
+                <i class="bi bi-arrow-clockwise"></i> Почини (переприменить конфигурацию)
             </button>
         </form>
         <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#resetServerModal">
@@ -148,32 +169,32 @@
                 </tbody>
             </table>
         </div>
-        {% for peer_diag in diagnostics.peers %}
+        {% for client_diag in diagnostics.peers %}
         <div class="p-3 rounded mb-2"
              style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
             <div class="d-flex align-items-center gap-2 mb-1">
-                {% if peer_diag.severity == 'ok' %}
+                {% if client_diag.severity == 'ok' %}
                 <span class="badge text-bg-success">OK</span>
-                {% elif peer_diag.severity == 'warning' %}
+                {% elif client_diag.severity == 'warning' %}
                 <span class="badge text-bg-warning text-dark">Внимание</span>
                 {% else %}
                 <span class="badge text-bg-danger">Проблема</span>
                 {% endif %}
-                <strong>{{ peer_diag.name }}</strong>
+                <strong>{{ client_diag.name }}</strong>
                 <span class="text-secondary small mono">
-                    ↓{{ peer_diag.rx_bytes }} Б / ↑{{ peer_diag.tx_bytes }} Б
-                    {% if peer_diag.handshake_age_seconds is not none %}
-                    · handshake {{ peer_diag.handshake_age_seconds }}с назад
+                    ↓{{ client_diag.rx_bytes }} Б / ↑{{ client_diag.tx_bytes }} Б
+                    {% if client_diag.handshake_age_seconds is not none %}
+                    · последняя активность {{ client_diag.handshake_age_seconds }}с назад
                     {% endif %}
                 </span>
             </div>
-            <p class="text-secondary small mb-0">{{ peer_diag.verdict }}</p>
+            <p class="text-secondary small mb-0">{{ client_diag.verdict }}</p>
         </div>
         {% endfor %}
     </div>
     {% endif %}
 
-    {% if peers|length == 0 %}
+    {% if clients|length == 0 %}
     <div class="card-surface p-5 text-center text-secondary">
         <i class="bi bi-inboxes" style="font-size: 2rem;"></i>
         <p class="mb-0 mt-2">Устройств пока нет. Нажмите «Добавить устройство».</p>
@@ -185,36 +206,38 @@
                 <thead>
                     <tr>
                         <th>Имя</th>
-                        <th>VPN-адрес</th>
-                        <th>Public Key</th>
-                        <th>Последнее подключение</th>
+                        <th>{{ clients[0].primary_label }}</th>
+                        <th>{{ clients[0].secondary_label }}</th>
+                        <th>Подключение</th>
                         <th>Трафик</th>
                         <th>QR</th>
                         <th></th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for peer in peers %}
+                    {% for client in clients %}
                     <tr>
-                        <td><strong>{{ peer.name }}</strong></td>
-                        <td class="mono">{{ peer.allocated_ip }}</td>
+                        <td><strong>{{ client.name }}</strong></td>
+                        <td class="mono">{{ client.primary_value }}</td>
                         <td>
                             <div class="d-flex align-items-center gap-2">
-                                <code class="mono text-truncate" style="max-width: 160px;" title="{{ peer.public_key }}">{{ peer.public_key }}</code>
-                                <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ peer.public_key }}" title="Скопировать"></i>
+                                <code class="mono text-truncate" style="max-width: 160px;" title="{{ client.secondary_value }}">{{ client.secondary_value }}</code>
+                                <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ client.secondary_value }}" title="Скопировать"></i>
                             </div>
                         </td>
-                        <td class="text-secondary small">{{ connection_labels.get(peer.id, "нет подключений") }}</td>
-                        <td class="text-secondary small mono">{{ traffic_labels.get(peer.id, "↓ 0 B / ↑ 0 B") }}</td>
-                        <td><img src="{{ peer.qr_url }}" alt="QR" width="64" height="64" class="qr-thumb"></td>
+                        <td class="text-secondary small">{{ client.connection_label or "нет подключений" }}</td>
+                        <td class="text-secondary small mono">{{ client.traffic_label or "—" }}</td>
+                        <td><img src="{{ client.qr_url }}" alt="QR" width="64" height="64" class="qr-thumb"></td>
                         <td>
                             <div class="d-flex gap-2">
-                                <a href="/wireguard/peers/{{ peer.id }}/download" class="btn btn-sm btn-outline-primary" title="Скачать .conf">
+                                {% if provider_key == "wireguard" %}
+                                <a href="{{ url_prefix }}/peers/{{ client.id }}/download" class="btn btn-sm btn-outline-primary" title="Скачать .conf">
                                     <i class="bi bi-download"></i>
                                 </a>
+                                {% endif %}
                                 <button type="button" class="btn btn-sm btn-outline-danger"
-                                        data-bs-toggle="modal" data-bs-target="#deletePeerModal"
-                                        data-delete-id="{{ peer.id }}" data-delete-name="{{ peer.name }}">
+                                        data-bs-toggle="modal" data-bs-target="#deleteClientModal"
+                                        data-delete-id="{{ client.id }}" data-delete-name="{{ client.name }}">
                                     <i class="bi bi-trash3"></i>
                                 </button>
                             </div>
@@ -230,9 +253,9 @@
 </div>
 
 <!-- Модалка: добавить устройство (только имя — всё остальное автоматически) -->
-<div class="modal fade" id="addPeerModal" tabindex="-1">
+<div class="modal fade" id="addClientModal" tabindex="-1">
     <div class="modal-dialog">
-        <form method="post" action="/wireguard/peers" class="modal-content card-surface">
+        <form method="post" action="{{ url_prefix }}/{{ 'peers' if provider_key == 'wireguard' else 'clients' }}" class="modal-content card-surface">
             <div class="modal-header border-secondary-subtle">
                 <h5 class="modal-title">Новое устройство</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -241,7 +264,7 @@
                 <label class="form-label small text-secondary">Название устройства</label>
                 <input type="text" name="name" class="form-control" placeholder="например, iPhone Ивана" required autofocus>
                 <div class="form-text">
-                    Ключи, IP-адрес и готовый конфиг будут сгенерированы автоматически —
+                    Ключи и готовый конфиг будут сгенерированы автоматически —
                     вводить ничего кроме названия не нужно.
                 </div>
             </div>
@@ -256,15 +279,14 @@
 <!-- Модалка: подтверждение полного сброса сервера -->
 <div class="modal fade" id="resetServerModal" tabindex="-1">
     <div class="modal-dialog">
-        <form method="post" action="/wireguard/reset" class="modal-content card-surface">
+        <form method="post" action="{{ url_prefix }}/reset" class="modal-content card-surface">
             <div class="modal-header border-secondary-subtle">
-                <h5 class="modal-title">Сбросить WireGuard-сервер?</h5>
+                <h5 class="modal-title">Сбросить {{ provider.display_name if provider else provider_key }}-сервер?</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                Контейнер сервера, <strong>все устройства</strong> и их конфиги/QR-коды будут
-                удалены безвозвратно. После этого можно будет настроить сервер заново
-                (другой порт, подсеть, DNS).
+                Сервер, <strong>все устройства</strong> и их конфиги/QR-коды будут
+                удалены безвозвратно. После этого можно будет настроить сервер заново.
             </div>
             <div class="modal-footer border-secondary-subtle">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
@@ -275,15 +297,15 @@
 </div>
 
 <!-- Модалка: подтверждение удаления -->
-<div class="modal fade" id="deletePeerModal" tabindex="-1">
+<div class="modal fade" id="deleteClientModal" tabindex="-1">
     <div class="modal-dialog">
-        <form method="post" id="deletePeerForm" class="modal-content card-surface">
+        <form method="post" id="deleteClientForm" class="modal-content card-surface">
             <div class="modal-header border-secondary-subtle">
                 <h5 class="modal-title">Удалить устройство?</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                Устройство <strong id="deletePeerName"></strong> потеряет доступ к VPN немедленно.
+                Устройство <strong id="deleteClientName"></strong> потеряет доступ немедленно.
             </div>
             <div class="modal-footer border-secondary-subtle">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
@@ -314,14 +336,15 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    const deletePeerModal = document.getElementById('deletePeerModal');
-    if (deletePeerModal) {
-        deletePeerModal.addEventListener('show.bs.modal', function (event) {
+    const deleteClientModal = document.getElementById('deleteClientModal');
+    if (deleteClientModal) {
+        deleteClientModal.addEventListener('show.bs.modal', function (event) {
             const button = event.relatedTarget;
             const id = button.getAttribute('data-delete-id');
             const name = button.getAttribute('data-delete-name');
-            document.getElementById('deletePeerName').textContent = name;
-            document.getElementById('deletePeerForm').setAttribute('action', '/wireguard/peers/' + id + '/delete');
+            document.getElementById('deleteClientName').textContent = name;
+            const base = '{{ url_prefix }}/' + ('{{ provider_key }}' === 'wireguard' ? 'peers' : 'clients');
+            document.getElementById('deleteClientForm').setAttribute('action', base + '/' + id + '/delete');
         });
     }
 
@@ -336,18 +359,20 @@
         });
     });
 
-    function refreshWgStatus() {
+    function refreshProviderStatus() {
         fetch('/api/vpn-status', { credentials: 'same-origin' })
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (data) {
                 if (!data) return;
-                const el = document.getElementById('wgServerStatus');
+                const el = document.getElementById('providerStatus');
                 if (!el) return;
-                el.textContent = data.wireguard;
-                el.className = 'stat-value ' + (data.wireguard === 'running' ? 'text-success' : 'text-warning');
+                const value = data['{{ provider_key }}'];
+                if (!value) return;
+                el.textContent = value;
+                el.className = 'stat-value ' + (value === 'running' ? 'text-success' : 'text-warning');
             })
             .catch(function () {});
     }
-    setInterval(refreshWgStatus, 6000);
+    setInterval(refreshProviderStatus, 6000);
 </script>
 {% endblock %}

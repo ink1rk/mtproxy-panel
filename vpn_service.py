@@ -106,7 +106,7 @@ class WireGuardService:
         for peer in self._repository.get_all_peers():
             rx, tx = transfers.get(peer.public_key, (0, 0))
             peers.append(
-                vpn_health.diagnose_peer(
+                vpn_health.diagnose_client(
                     name=peer.name,
                     handshake_epoch=handshakes.get(peer.public_key, 0),
                     rx_bytes=rx,

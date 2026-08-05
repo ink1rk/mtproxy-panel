@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 import config
 import host_exec
-from firewall_manager import detect_wan_interface, wg_nat_status
+from firewall_manager import detect_wan_interface, tunnel_nat_status
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,14 @@ class CheckResult:
 
 
 @dataclass(frozen=True, slots=True)
-class PeerDiagnosis:
-    """Диагноз одного WG-клиента по счётчикам handshake/transfer."""
+class ClientDiagnosis:
+    """
+    Диагноз одного клиента по счётчикам активности/трафика. Сейчас
+    заполняется для WireGuard (handshake/transfer); структура намеренно
+    протокол-независима, чтобы её мог использовать любой провайдер
+    (см. providers/base.py), у которого есть понятие "клиент подключался
+    настолько недавно" и "сколько байт передано".
+    """
 
     name: str
     has_handshake: bool
@@ -209,7 +215,9 @@ def diagnose_wireguard_routing(*, subnet: str, listen_port: int) -> HealthReport
     report = HealthReport(service="wireguard-routing")
     report.checks.append(_check_systemd_active(config.WG_SYSTEMD_UNIT))
     report.checks.append(_check_port(listen_port, "udp"))
-    status = wg_nat_status(subnet=subnet, listen_port=listen_port, wan=wan)
+    status = tunnel_nat_status(
+        interface=config.WG_INTERFACE_NAME, subnet=subnet, listen_port=listen_port, wan=wan,
+    )
     report.checks.append(CheckResult("NAT (MASQUERADE)", status["nat"], f"wan={wan}"))
     report.checks.append(CheckResult("FORWARD accept для wg0", status["forward"], ""))
     report.checks.append(CheckResult("DOCKER-USER accept для wg0", status["docker_user"], ""))
@@ -219,11 +227,11 @@ def diagnose_wireguard_routing(*, subnet: str, listen_port: int) -> HealthReport
     return report
 
 
-def diagnose_peer(
+def diagnose_client(
     *, name: str, handshake_epoch: int, rx_bytes: int, tx_bytes: int,
-) -> PeerDiagnosis:
+) -> ClientDiagnosis:
     """
-    Человекочитаемый вердикт по одному peer'у на основе handshake/трафика.
+    Человекочитаемый вердикт по одному клиенту на основе handshake/трафика.
     Главная цель — отличить "конфиг сервера сломан" от "проблема на стороне
     клиента/сети" без часов ручного разбора логов.
     """
@@ -233,7 +241,7 @@ def diagnose_peer(
     age = int(time.time()) - handshake_epoch if has_handshake else None
 
     if not has_handshake:
-        return PeerDiagnosis(
+        return ClientDiagnosis(
             name=name, has_handshake=False, handshake_age_seconds=None,
             rx_bytes=rx_bytes, tx_bytes=tx_bytes, severity="error",
             verdict=(
@@ -247,7 +255,7 @@ def diagnose_peer(
     # handshake есть, но получено мало, а сервер продолжает слать (keepalive
     # вхолостую) — классический "подключился, интернета нет".
     if rx_bytes < 2048 and tx_bytes > max(rx_bytes, 512) * 2:
-        return PeerDiagnosis(
+        return ClientDiagnosis(
             name=name, has_handshake=True, handshake_age_seconds=age,
             rx_bytes=rx_bytes, tx_bytes=tx_bytes, severity="warning",
             verdict=(
@@ -261,13 +269,13 @@ def diagnose_peer(
         )
 
     if rx_bytes >= 2048:
-        return PeerDiagnosis(
+        return ClientDiagnosis(
             name=name, has_handshake=True, handshake_age_seconds=age,
             rx_bytes=rx_bytes, tx_bytes=tx_bytes, severity="ok",
             verdict="Трафик идёт нормально.",
         )
 
-    return PeerDiagnosis(
+    return ClientDiagnosis(
         name=name, has_handshake=True, handshake_age_seconds=age,
         rx_bytes=rx_bytes, tx_bytes=tx_bytes, severity="warning",
         verdict="Недостаточно данных для вывода — подключись и подожди немного, затем обнови страницу.",

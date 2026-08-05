@@ -133,7 +133,10 @@ class FirewallManager:
 
 
 # ---------------------------------------------------------------------------
-# WireGuard NAT/FORWARD — чистый Python, без shell-скриптов.
+# NAT/FORWARD для туннельного интерфейса — чистый Python, без shell-скриптов,
+# без единого упоминания конкретного протокола (WireGuard/что угодно ещё).
+# Вызывающая сторона (wireguard_manager.py и т.п.) передаёт своё имя
+# интерфейса — сюда оно приходит просто строкой.
 #
 # Раньше это была bash-эвристика (heredoc, записанная как отдельный .sh файл
 # в /usr/local/sbin с chmod +x — источник "Permission denied" и вообще лишней
@@ -153,13 +156,13 @@ def _ensure_rule(ipt: str, insert_args: list[str], check_args: list[str]) -> boo
     return host_exec.run([ipt, *insert_args], check=False).ok
 
 
-def ensure_wg_nat_forward(*, subnet: str, listen_port: int, wan: str) -> dict:
+def ensure_tunnel_nat_forward(*, interface: str, subnet: str, listen_port: int, wan: str) -> dict:
     """
     PostUp ровно как у проверенного годами рабочего wg-easy:
       - MASQUERADE (не SNAT на статичный IP — переживает смену DHCP-адреса)
-      - FORWARD ACCEPT для wg0 (Docker ставит policy DROP)
-      - DOCKER-USER ACCEPT для wg0, если цепочка есть
-      - INPUT ACCEPT на UDP-порт WireGuard
+      - FORWARD ACCEPT для туннельного интерфейса (Docker ставит policy DROP)
+      - DOCKER-USER ACCEPT, если цепочка есть
+      - INPUT ACCEPT на UDP-порт
     Применяется на все доступные бэкенды iptables (nft/legacy), т.к. Docker
     и хостовый alternatives иногда расходятся.
     """
@@ -168,21 +171,21 @@ def ensure_wg_nat_forward(*, subnet: str, listen_port: int, wan: str) -> dict:
     for ipt in backends:
         host_exec.run([ipt, "-P", "FORWARD", "ACCEPT"], check=False)
         _ensure_rule(
-            ipt, ["-I", "FORWARD", "1", "-i", "wg0", "-j", "ACCEPT"],
-            ["-C", "FORWARD", "-i", "wg0", "-j", "ACCEPT"],
+            ipt, ["-I", "FORWARD", "1", "-i", interface, "-j", "ACCEPT"],
+            ["-C", "FORWARD", "-i", interface, "-j", "ACCEPT"],
         )
         _ensure_rule(
-            ipt, ["-I", "FORWARD", "1", "-o", "wg0", "-j", "ACCEPT"],
-            ["-C", "FORWARD", "-o", "wg0", "-j", "ACCEPT"],
+            ipt, ["-I", "FORWARD", "1", "-o", interface, "-j", "ACCEPT"],
+            ["-C", "FORWARD", "-o", interface, "-j", "ACCEPT"],
         )
         if host_exec.run([ipt, "-L", "DOCKER-USER", "-n"], check=False).ok:
             _ensure_rule(
-                ipt, ["-I", "DOCKER-USER", "1", "-i", "wg0", "-j", "ACCEPT"],
-                ["-C", "DOCKER-USER", "-i", "wg0", "-j", "ACCEPT"],
+                ipt, ["-I", "DOCKER-USER", "1", "-i", interface, "-j", "ACCEPT"],
+                ["-C", "DOCKER-USER", "-i", interface, "-j", "ACCEPT"],
             )
             _ensure_rule(
-                ipt, ["-I", "DOCKER-USER", "1", "-o", "wg0", "-j", "ACCEPT"],
-                ["-C", "DOCKER-USER", "-o", "wg0", "-j", "ACCEPT"],
+                ipt, ["-I", "DOCKER-USER", "1", "-o", interface, "-j", "ACCEPT"],
+                ["-C", "DOCKER-USER", "-o", interface, "-j", "ACCEPT"],
             )
         _ensure_rule(
             ipt,
@@ -194,11 +197,14 @@ def ensure_wg_nat_forward(*, subnet: str, listen_port: int, wan: str) -> dict:
             ["-I", "INPUT", "1", "-p", "udp", "-m", "udp", "--dport", str(listen_port), "-j", "ACCEPT"],
             ["-C", "INPUT", "-p", "udp", "-m", "udp", "--dport", str(listen_port), "-j", "ACCEPT"],
         )
-    logger.info("WG NAT (Python): wan=%s port=%s backends=%s", wan, listen_port, backends)
-    return {"wan": wan, "port": listen_port, "backends": backends}
+    logger.info(
+        "Tunnel NAT (Python): interface=%s wan=%s port=%s backends=%s",
+        interface, wan, listen_port, backends,
+    )
+    return {"interface": interface, "wan": wan, "port": listen_port, "backends": backends}
 
 
-def wg_nat_status(*, subnet: str, listen_port: int, wan: str) -> dict[str, bool]:
+def tunnel_nat_status(*, interface: str, subnet: str, listen_port: int, wan: str) -> dict[str, bool]:
     """Для диагностики: что из правил реально применено сейчас."""
     network_cidr = subnet if "/" in subnet else f"{subnet}/24"
     ipt = "iptables"
@@ -210,10 +216,10 @@ def wg_nat_status(*, subnet: str, listen_port: int, wan: str) -> dict[str, bool]
         check=False,
     ).ok
     forward_in = host_exec.run(
-        [ipt, "-C", "FORWARD", "-i", "wg0", "-j", "ACCEPT"], check=False,
+        [ipt, "-C", "FORWARD", "-i", interface, "-j", "ACCEPT"], check=False,
     ).ok
     forward_out = host_exec.run(
-        [ipt, "-C", "FORWARD", "-o", "wg0", "-j", "ACCEPT"], check=False,
+        [ipt, "-C", "FORWARD", "-o", interface, "-j", "ACCEPT"], check=False,
     ).ok
     input_accept = host_exec.run(
         [ipt, "-C", "INPUT", "-p", "udp", "-m", "udp", "--dport", str(listen_port), "-j", "ACCEPT"],
@@ -222,8 +228,8 @@ def wg_nat_status(*, subnet: str, listen_port: int, wan: str) -> dict[str, bool]
     docker_user_ok = True
     if host_exec.run([ipt, "-L", "DOCKER-USER", "-n"], check=False).ok:
         docker_user_ok = (
-            host_exec.run([ipt, "-C", "DOCKER-USER", "-i", "wg0", "-j", "ACCEPT"], check=False).ok
-            and host_exec.run([ipt, "-C", "DOCKER-USER", "-o", "wg0", "-j", "ACCEPT"], check=False).ok
+            host_exec.run([ipt, "-C", "DOCKER-USER", "-i", interface, "-j", "ACCEPT"], check=False).ok
+            and host_exec.run([ipt, "-C", "DOCKER-USER", "-o", interface, "-j", "ACCEPT"], check=False).ok
         )
     return {
         "nat": nat,

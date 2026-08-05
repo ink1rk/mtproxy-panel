@@ -41,6 +41,34 @@ class Proxy:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderClient:
+    """
+    Единая модель "клиента" для любого VPN/прокси-провайдера (WireGuard peer,
+    VLESS client, MTProxy instance, будущие Shadowsocks/Hysteria2/...).
+
+    Routes и шаблоны работают ТОЛЬКО с этой моделью и никогда не видят
+    WireGuardPeer/VlessClient/Proxy напрямую — это держит UI независимым
+    от того, какой именно протокол за ним стоит (см. providers/base.py).
+    """
+
+    id: str
+    name: str
+    created_at: str
+    config_text: str
+    qr_filename: str
+    primary_label: str
+    primary_value: str
+    secondary_label: str = ""
+    secondary_value: str = ""
+    connection_label: str = ""
+    traffic_label: str = ""
+
+    @property
+    def qr_url(self) -> str:
+        return f"/static/qr/{self.qr_filename}"
+
+
+@dataclass(frozen=True, slots=True)
 class AdminUser:
     """Доменная модель администратора панели."""
 
