@@ -41,7 +41,7 @@ class WireGuardConfigTests(unittest.TestCase):
         self.assertIn("AllowedIPs = 10.66.0.2/32", conf)
 
     def test_client_matches_wg_easy_shape(self) -> None:
-        self.assertEqual(config.WG_CLIENT_ALLOWED_IPS, "0.0.0.0/0")
+        self.assertEqual(config.WG_CLIENT_ALLOWED_IPS, "0.0.0.0/1, 128.0.0.0/1")
         self.assertEqual(config.WG_CLIENT_MTU, 1280)
         conf = wc.render_client_config(
             client_private_key="CPRIV",
@@ -53,9 +53,9 @@ class WireGuardConfigTests(unittest.TestCase):
             subnet="10.66.0.0/24",
             preshared_key="PSK",
         )
-        self.assertIn("Address = 10.66.0.2/32", conf)
+        self.assertIn("Address = 10.66.0.2/24", conf)
         self.assertIn("PresharedKey = PSK", conf)
-        self.assertIn("AllowedIPs = 0.0.0.0/0", conf)
+        self.assertIn("AllowedIPs = 0.0.0.0/1, 128.0.0.0/1", conf)
         self.assertNotIn("::/0", conf)
         self.assertIn("MTU = 1280", conf)
         self.assertIn("PersistentKeepalive = 25", conf)
@@ -68,7 +68,7 @@ class WireGuardConfigTests(unittest.TestCase):
     def test_default_subnet_matches_proven_path(self) -> None:
         self.assertEqual(config.WG_DEFAULT_SUBNET, "10.8.0.0/24")
         self.assertEqual(config.WG_DEFAULT_PORT, 443)
-        self.assertEqual(config.WG_CLIENT_ADDRESS_PREFIX, "32")
+        self.assertEqual(config.WG_CLIENT_ADDRESS_PREFIX, "24")
         self.assertTrue(config.WG_AUTO_PROVISION)
         self.assertEqual(config.WG_DEFAULT_PEER_NAME, "iphone")
 

@@ -111,8 +111,8 @@ def render_client_config(
     subnet: str = config.WG_DEFAULT_SUBNET,
     preshared_key: str = "",
 ) -> str:
-    """Клиент: Address /32, PSK, MTU, IPv4-only AllowedIPs."""
-    del subnet  # prefix фиксирован — см. WG_CLIENT_ADDRESS_PREFIX
+    """Клиент под Windows/iOS: Address /24, AllowedIPs двумя /1."""
+    del subnet
     prefix = config.WG_CLIENT_ADDRESS_PREFIX
     lines = [
         "[Interface]",

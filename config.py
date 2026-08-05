@@ -151,9 +151,6 @@ WG_DEFAULT_PEER_NAME: str = "iphone"
 WG_KEEPALIVE_SECONDS: int = 25
 # 1280 — безопаснее для LTE/CGNAT (wg-easy часто ставят так на мобильных).
 WG_CLIENT_MTU: int = 1280
-# Клиентский Address всегда /32 (point-to-point). /24 на Windows/macOS
-# иногда даёт «handshake есть, пинги не идут».
-WG_CLIENT_ADDRESS_PREFIX: str = "32"
 WG_START_TIMEOUT_SECONDS: float = 45.0
 WG_INTERFACE_TIMEOUT_SECONDS: float = 60.0
 # WAN для MASQUERADE; runtime ещё раз определяет через default route.
@@ -215,9 +212,13 @@ NFT_TABLE_NAME: str = "mtproxy-panel"
 NFT_RULES_PATH: str = "/etc/nftables.d/mtproxy-panel.nft"
 SYSCTL_FORWARD_PATH: str = "/etc/sysctl.d/99-mtproxy-panel-forward.conf"
 WG_NAT_HELPER_PATH: str = "/usr/local/sbin/mtproxy-wg-nat.sh"
-# Клиентам только IPv4. AllowedIPs с ::/0 на телефоне без IPv6-NAT =
-# «VPN подключён, сайты не открываются», transfer ~2 KiB.
-WG_CLIENT_ALLOWED_IPS: str = "0.0.0.0/0"
+# Клиентам только IPv4. На Windows AllowedIPs=0.0.0.0/0 часто НЕ
+# перехватывает default route (адаптер есть, gateway 0.0.0.0, ping мёртв,
+# transfer ~1 KiB). Два /1 покрывают весь IPv4 и стабильно ставят маршруты.
+WG_CLIENT_ALLOWED_IPS: str = "0.0.0.0/1, 128.0.0.0/1"
+# /24 на клиенте: Windows показывает нормальную маску; /32 + gateway 0.0.0.0
+# путает диагностику и иногда маршрутизацию.
+WG_CLIENT_ADDRESS_PREFIX: str = "24"
 
 # Ротация docker-логов только для MTProxy-контейнеров.
 DOCKER_LOG_CONFIG: dict = {
