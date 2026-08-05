@@ -255,9 +255,8 @@ class WireGuardService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Не удалось обновить QR WireGuard peer id=%d: %s", peer.id, exc)
             logger.info(
-                "Клиентский WG '%s': AllowedIPs=%s DNS=%s MTU=%s PSK=yes",
+                "Клиентский WG '%s': AllowedIPs=%s DNS=%s PSK=yes",
                 peer.name, config.WG_CLIENT_ALLOWED_IPS, server_config.dns,
-                config.WG_CLIENT_MTU,
             )
 
     def _rewrite_and_reload(self, server_config: WireGuardServerConfig) -> None:
