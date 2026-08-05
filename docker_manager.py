@@ -89,6 +89,8 @@ class DockerManager:
         container_name: str,
         host_port: int,
         secret: str,
+        *,
+        use_host_network: bool = False,
     ) -> Container:
         """
         Создаёт и запускает контейнер telegrammessenger/proxy.
@@ -97,6 +99,17 @@ class DockerManager:
         nat/DOCKER (iptables → nft-backend после ребута/апдейта) — публикация
         портов падает с "No chain/target/match by that name". Чиним один раз
         (iptables-legacy + restart docker) и повторяем создание контейнера.
+
+        use_host_network: обходит Docker bridge/DNAT целиком (как у native
+        WireGuard/Xray). На части VPS (подтверждено живым тестом: локально
+        и через container-IP хендшейк проходит, через внешний DNAT — TCP
+        SYN/ACK проходят, но сразу после первых байт данных приходит RST
+        ровно через 5с) bridge-режим Docker ломает реальный TCP-обмен для
+        MTProxy, оставаясь рабочим для простого TCP-коннекта. Host-режим
+        обходит эту проблему полностью — подтверждено 3/3 успешных
+        MTProto-хендшейков. Образ жёстко слушает порт 443 (нет env для
+        смены), поэтому host-режим применим только для host_port=443 и
+        только для ОДНОГО инстанса одновременно.
         """
         from docker.types import LogConfig
 
@@ -106,6 +119,16 @@ class DockerManager:
         )
 
         def _run() -> Container:
+            if use_host_network:
+                return self._client.containers.run(
+                    config.MTPROXY_DOCKER_IMAGE,
+                    name=container_name,
+                    detach=True,
+                    restart_policy={"Name": "unless-stopped"},
+                    network_mode="host",
+                    environment={"SECRET": secret},
+                    log_config=log_config,
+                )
             return self._client.containers.run(
                 config.MTPROXY_DOCKER_IMAGE,
                 name=container_name,

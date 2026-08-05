@@ -82,6 +82,17 @@ class MTProxyProvisioner:
         except (utils.NoFreePortError, utils.PortUnavailableError) as exc:
             raise MTProxyCreationError(str(exc)) from exc
 
+        # Docker bridge/DNAT для MTProxy на порту 443 подтверждённо ломает
+        # реальный TCP-обмен на части VPS (TCP-хендшейк проходит, но сразу
+        # после первых байт данных — RST через ровно 5с; MTProto-хендшейк
+        # с корректным secret воспроизводимо не проходит через внешний
+        # DNAT, хотя проходит локально/через container-IP). Host-режим
+        # (как у native WireGuard/Xray) обходит эту проблему полностью —
+        # подтверждено живым тестом. Образ жёстко слушает 443 без env для
+        # смены порта, поэтому применимо только при port=443 и только для
+        # одного инстанса одновременно (что и есть авто-провижининг).
+        use_host_network = port == config.MTPROXY_DEFAULT_HOST_PORT
+
         # Шаг 2: секрет и его варианты для контейнера/ссылок.
         base_secret = utils.generate_secret()
         try:
@@ -96,6 +107,7 @@ class MTProxyProvisioner:
                 container_name=container_name,
                 host_port=port,
                 secret=container_secret,
+                use_host_network=use_host_network,
             )
         except Exception as exc:
             logger.error("Не удалось создать контейнер '%s': %s", container_name, exc)
