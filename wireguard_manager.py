@@ -183,6 +183,32 @@ echo NAT_OK wan={wan} src={src_ip or 'masq'} port={listen_port}
             raise WireGuardError(f"NAT/FORWARD не применился: {result.output}")
         logger.info("WG NAT: %s", result.output)
 
+    def _relax_apparmor(self) -> None:
+        """
+        Ubuntu AppArmor profiles wg / wg-quick ломают native WG:
+        iptables-legacy exec denied, иногда `ip link set mtu` → Permission denied.
+        Снимаем профили (идемпотентно).
+        """
+        script = r"""
+set +e
+mkdir -p /etc/apparmor.d/disable
+for p in wg wg-quick; do
+  src="/etc/apparmor.d/$p"
+  if [ -f "$src" ] && [ ! -e "/etc/apparmor.d/disable/$p" ]; then
+    ln -sf "$src" "/etc/apparmor.d/disable/$p"
+  fi
+  apparmor_parser -R "$src" 2>/dev/null || true
+done
+# iptables → nft: совместимее с Docker и AppArmor, если профиль вернётся
+if [ -x /usr/sbin/iptables-nft ]; then
+  update-alternatives --set iptables /usr/sbin/iptables-nft >/dev/null 2>&1 || true
+  update-alternatives --set ip6tables /usr/sbin/ip6tables-nft >/dev/null 2>&1 || true
+fi
+echo APPARMOR_RELAXED
+"""
+        result = host_exec.run(["bash", "-c", script], check=False)
+        logger.info("AppArmor WG: %s", result.output)
+
     def ensure_server_running(
         self,
         *,
@@ -191,6 +217,7 @@ echo NAT_OK wan={wan} src={src_ip or 'masq'} port={listen_port}
         subnet: str,
         xray_port: int | None = None,  # noqa: ARG002
     ) -> None:
+        self._relax_apparmor()
         self._stop_docker_wg()
         self._ensure_sysctl()
         self.write_config(conf_text, listen_port=listen_port, subnet=subnet)

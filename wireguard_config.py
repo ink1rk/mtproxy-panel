@@ -77,7 +77,8 @@ def render_server_config(
         f"PrivateKey = {server_private_key}",
         f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
-        f"MTU = {config.WG_CLIENT_MTU}",
+        # MTU только на клиенте: AppArmor wg-quick//ip иногда
+        # даёт RTNETLINK Permission denied на `ip link set mtu`.
         "",
     ]
     for peer in peers:

@@ -9,6 +9,14 @@ systemctl disable --now wg-quick@wg0 2>/dev/null || true
 wg-quick down wg0 2>/dev/null || true
 ip link delete wg0 2>/dev/null || true
 
+# AppArmor wg-quick ломает MTU/iptables на Ubuntu
+mkdir -p /etc/apparmor.d/disable
+for p in wg wg-quick; do
+  [ -f /etc/apparmor.d/$p ] && ln -sf /etc/apparmor.d/$p /etc/apparmor.d/disable/$p
+  apparmor_parser -R /etc/apparmor.d/$p 2>/dev/null || true
+done
+update-alternatives --set iptables /usr/sbin/iptables-nft >/dev/null 2>&1 || true
+
 # панель снова владеет WireGuard
 rm -f /etc/systemd/system/mtproxy-panel.service.d/override.conf
 systemctl daemon-reload
