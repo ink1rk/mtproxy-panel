@@ -94,19 +94,19 @@ def _check_wg_native(subnet: str, listen_port: int) -> CheckResult:
     fwd = host_exec.run(["iptables", "-S", "FORWARD"], check=False)
     docker_user = host_exec.run(["iptables", "-S", "DOCKER-USER"], check=False)
     has_iface = show.ok and "interface:" in show.stdout
-    has_masq = (
-        nat.ok
-        and "MASQUERADE" in nat.stdout
-        and subnet.split("/")[0].rsplit(".", 1)[0] in nat.stdout
+    subnet_base = subnet.split("/")[0].rsplit(".", 1)[0]
+    nat_out = nat.stdout if nat.ok else ""
+    has_nat = subnet_base in nat_out and (
+        "MASQUERADE" in nat_out or "SNAT" in nat_out or "--to-source" in nat_out
     )
     has_fwd = fwd.ok and "-i wg0" in fwd.stdout and "-o wg0" in fwd.stdout
     has_du = (not docker_user.ok) or (
         "-i wg0" in docker_user.stdout and "-o wg0" in docker_user.stdout
     )
-    ok = has_iface and has_masq and has_fwd
+    ok = has_iface and has_nat and has_fwd
     detail = (
         f"wg0={'yes' if has_iface else 'NO'} "
-        f"masq={'yes' if has_masq else 'NO'} "
+        f"nat={'yes' if has_nat else 'NO'} "
         f"fwd={'yes' if has_fwd else 'NO'} "
         f"docker-user={'yes' if has_du else 'NO'} "
         f"wan={wan} subnet={subnet} udp={listen_port}"
