@@ -129,41 +129,35 @@ class WireGuardManager:
         if addr.ok and addr.stdout.strip():
             src_ip = addr.stdout.strip().split("/")[0]
 
-        snat_line = (
-            f"iptables -t nat -C POSTROUTING -s {network_cidr} -o {wan} "
-            f"-j SNAT --to-source {src_ip} 2>/dev/null || "
-            f"iptables -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} "
-            f"-j SNAT --to-source {src_ip}"
-            if src_ip
-            else (
-                f"iptables -t nat -C POSTROUTING -s {network_cidr} -o {wan} "
-                f"-j MASQUERADE 2>/dev/null || "
-                f"iptables -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} "
-                f"-j MASQUERADE"
-            )
-        )
-
         script = f"""
 set -e
-iptables -P FORWARD ACCEPT 2>/dev/null || true
-# До Docker-цепочек — иначе return-path иногда теряется.
-iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i wg0 -j ACCEPT
-iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o wg0 -j ACCEPT
-if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
-  iptables -C DOCKER-USER -i wg0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -i wg0 -j ACCEPT
-  iptables -C DOCKER-USER -o wg0 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -o wg0 -j ACCEPT
-fi
-{snat_line}
-iptables -C INPUT -p udp -m udp --dport {listen_port} -j ACCEPT 2>/dev/null \\
-  || iptables -I INPUT 1 -p udp -m udp --dport {listen_port} -j ACCEPT
-# ICMP туннеля (пинг 8.8.8.8 / gw)
-iptables -C FORWARD -i wg0 -p icmp -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i wg0 -p icmp -j ACCEPT
-iptables -C FORWARD -o wg0 -p icmp -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o wg0 -p icmp -j ACCEPT
-# TCP MSS clamp — сайты при MTU 1280
-iptables -t mangle -C FORWARD -i wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
-  || iptables -t mangle -A FORWARD -i wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-iptables -t mangle -C FORWARD -o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
-  || iptables -t mangle -A FORWARD -o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+apply() {{
+  local IPT="\$1"
+  \$IPT -P FORWARD ACCEPT 2>/dev/null || true
+  \$IPT -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || \$IPT -I FORWARD 1 -i wg0 -j ACCEPT
+  \$IPT -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || \$IPT -I FORWARD 1 -o wg0 -j ACCEPT
+  if \$IPT -L DOCKER-USER -n >/dev/null 2>&1; then
+    \$IPT -C DOCKER-USER -i wg0 -j ACCEPT 2>/dev/null || \$IPT -I DOCKER-USER 1 -i wg0 -j ACCEPT
+    \$IPT -C DOCKER-USER -o wg0 -j ACCEPT 2>/dev/null || \$IPT -I DOCKER-USER 1 -o wg0 -j ACCEPT
+  fi
+  if [ -n "{src_ip}" ]; then
+    \$IPT -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j SNAT --to-source {src_ip} 2>/dev/null \\
+      || \$IPT -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} -j SNAT --to-source {src_ip}
+  else
+    \$IPT -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE 2>/dev/null \\
+      || \$IPT -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} -j MASQUERADE
+  fi
+  \$IPT -C INPUT -p udp -m udp --dport {listen_port} -j ACCEPT 2>/dev/null \\
+    || \$IPT -I INPUT 1 -p udp -m udp --dport {listen_port} -j ACCEPT
+  \$IPT -C FORWARD -i wg0 -p icmp -j ACCEPT 2>/dev/null || \$IPT -I FORWARD 1 -i wg0 -p icmp -j ACCEPT
+  \$IPT -C FORWARD -o wg0 -p icmp -j ACCEPT 2>/dev/null || \$IPT -I FORWARD 1 -o wg0 -p icmp -j ACCEPT
+  \$IPT -t mangle -C FORWARD -i wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
+    || \$IPT -t mangle -A FORWARD -i wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+}}
+for IPT in iptables iptables-nft iptables-legacy; do
+  command -v "\$IPT" >/dev/null 2>&1 || continue
+  apply "\$IPT" || true
+done
 echo NAT_OK wan={wan} src={src_ip or 'masq'} port={listen_port}
 """
         # Persist helper for boot / docker restart
