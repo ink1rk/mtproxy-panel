@@ -116,7 +116,8 @@
                             </div>
                         </td>
                         <td>
-                            <img src="{{ proxy.qr_url }}" alt="QR" width="64" height="64" class="qr-thumb">
+                            <img src="{{ proxy.qr_url }}" alt="QR {{ proxy.container_name }}" width="64" height="64"
+                                 class="qr-thumb" data-qr-caption="{{ proxy.container_name }}">
                         </td>
                         <td>
                             <button type="button" class="btn btn-sm btn-outline-danger"

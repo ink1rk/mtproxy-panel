@@ -15,6 +15,7 @@
         initTooltips();
         initToasts();
         initProgressBar();
+        initQrLightbox();
     });
 
     /* --- Верхняя полоса загрузки: показывается на время fetch()/отправки форм.
@@ -78,6 +79,44 @@
             if (form && form.tagName === "FORM" && !event.defaultPrevented) {
                 PanelProgress.start();
             }
+        });
+    }
+
+    /* --- Лайтбокс QR: работает для ЛЮБОГО .qr-thumb на странице (в таблице
+       прокси, в таблице устройств WG/VLESS и в hero-карточке), а не только
+       для последнего созданного клиента — раньше крупно посмотреть QR
+       можно было только у него, у остальных был просто мелкий превью. --- */
+    function initQrLightbox() {
+        var lightbox = document.getElementById("qrLightbox");
+        if (!lightbox) return;
+        var img = lightbox.querySelector(".qr-lightbox-img");
+        var caption = document.getElementById("qrLightboxCaption");
+
+        function open(src, alt, label) {
+            img.src = src;
+            img.alt = alt || "QR";
+            if (caption) caption.textContent = label || "";
+            lightbox.classList.add("is-open");
+            lightbox.setAttribute("aria-hidden", "false");
+        }
+        function close() {
+            lightbox.classList.remove("is-open");
+            lightbox.setAttribute("aria-hidden", "true");
+        }
+
+        document.addEventListener("click", function (event) {
+            var trigger = event.target.closest("img.qr-thumb");
+            if (trigger) {
+                open(trigger.currentSrc || trigger.src, trigger.alt, trigger.getAttribute("data-qr-caption"));
+                return;
+            }
+            // Открытый лайтбокс закрывается кликом в любом месте (включая саму картинку).
+            if (lightbox.classList.contains("is-open")) {
+                close();
+            }
+        });
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Escape") close();
         });
     }
 

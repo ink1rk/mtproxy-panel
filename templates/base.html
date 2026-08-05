@@ -17,6 +17,17 @@
 </head>
 <body>
 <div id="panelProgress" aria-hidden="true"></div>
+
+<!-- Лайтбокс QR: общий для всех страниц, наполняется через theme.js -->
+<div id="qrLightbox" class="qr-lightbox" aria-hidden="true">
+    <button type="button" class="qr-lightbox-close" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
+    <div class="qr-lightbox-figure">
+        <img src="" alt="QR" class="qr-lightbox-img">
+        <div class="qr-lightbox-caption" id="qrLightboxCaption"></div>
+        <div class="qr-lightbox-hint">Нажмите в любом месте, чтобы закрыть</div>
+    </div>
+</div>
+
 {% block body %}{% endblock %}
 
 <!-- Общие зависимости: подключены один раз здесь, а не в каждом шаблоне -->
