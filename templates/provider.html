@@ -54,22 +54,23 @@
     {% if primary_client %}
     <div class="row justify-content-center mb-4">
         <div class="col-lg-5">
-            <div class="card-surface p-4 p-md-5 text-center u-fade-up">
+            <div class="card-surface p-4 p-md-5 text-center u-fade-up" id="heroCard"
+                 data-active-client-id="{{ primary_client.id }}" data-url-prefix="{{ url_prefix }}">
                 <p class="text-secondary small mb-2">Отсканируй в приложении {{ provider.display_name if provider else '' }}</p>
-                <h1 class="h4 mb-3">{{ primary_client.name }}</h1>
+                <h1 class="h4 mb-3" id="heroClientName">{{ primary_client.name }}</h1>
                 <img src="{{ primary_client.qr_url }}?t={{ primary_client.created_at }}"
                      alt="QR {{ primary_client.name }}" width="280" height="280"
                      class="qr-thumb qr-thumb-lg rounded mb-3" style="background:#fff;padding:12px;"
-                     data-qr-caption="{{ primary_client.name }}">
+                     data-qr-caption="{{ primary_client.name }}" id="heroQrImage">
                 <p class="mono small text-secondary mb-2">
-                    {{ endpoint }} · {{ primary_client.primary_value }}
+                    {{ endpoint }} · <span id="heroPrimaryValue">{{ primary_client.primary_value }}</span>
                 </p>
-                <p class="small text-secondary mb-3">
+                <p class="small text-secondary mb-3" id="heroConnectionInfo">
                     {{ primary_client.connection_label or "нет подключений" }}
                     {% if primary_client.traffic_label %} · {{ primary_client.traffic_label }}{% endif %}
                 </p>
                 {% if provider_key == "wireguard" %}
-                <a href="{{ url_prefix }}/peers/{{ primary_client.id }}/download" class="btn btn-sm btn-outline-primary">
+                <a href="{{ url_prefix }}/peers/{{ primary_client.id }}/download" class="btn btn-sm btn-outline-primary" id="heroDownloadLink">
                     <i class="bi bi-download"></i> Скачать .conf
                 </a>
                 {% endif %}
@@ -90,7 +91,8 @@
                 </div>
                 {% elif provider_key == "vless" %}
                 <div class="d-flex justify-content-center gap-2 mb-2 mt-3">
-                    <i class="bi bi-clipboard copy-btn text-secondary" data-copy="{{ primary_client.secondary_value }}" data-bs-toggle="tooltip" title="Скопировать ссылку"></i>
+                    <i class="bi bi-clipboard copy-btn text-secondary" id="heroCopyIcon"
+                       data-copy="{{ primary_client.secondary_value }}" data-bs-toggle="tooltip" title="Скопировать ссылку"></i>
                     <span class="text-secondary small">скопировать ссылку</span>
                 </div>
                 <div class="info-panel is-info text-start small text-secondary mt-3">
@@ -228,7 +230,14 @@
                 </thead>
                 <tbody>
                     {% for client in clients %}
-                    <tr>
+                    <tr class="js-client-row {% if client.id == primary_client.id %}is-hero-active{% endif %}"
+                        data-client-id="{{ client.id }}"
+                        data-client-name="{{ client.name }}"
+                        data-client-primary="{{ client.primary_value }}"
+                        data-client-secondary="{{ client.secondary_value }}"
+                        data-client-connection="{{ client.connection_label or '' }}"
+                        data-client-traffic="{{ client.traffic_label or '' }}"
+                        data-client-qr="{{ client.qr_url }}">
                         <td><strong>{{ client.name }}</strong></td>
                         <td class="mono">{{ client.primary_value }}</td>
                         <td>
@@ -245,6 +254,9 @@
                         </td>
                         <td>
                             <div class="d-flex gap-2">
+                                <button type="button" class="btn btn-sm btn-outline-secondary js-select-hero" data-bs-toggle="tooltip" title="Показать крупно вверху страницы">
+                                    <i class="bi bi-arrow-up-square"></i>
+                                </button>
                                 {% if provider_key == "wireguard" %}
                                 <a href="{{ url_prefix }}/peers/{{ client.id }}/download" class="btn btn-sm btn-outline-primary" title="Скачать .conf">
                                     <i class="bi bi-download"></i>

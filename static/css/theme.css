@@ -428,6 +428,15 @@ h1, h2, h3, h4, h5, h6 {
     padding: 1.2rem 1.35rem;
     box-shadow: var(--shadow-sm);
     overflow: hidden;
+    /* Карточки в одном .row растягиваются на высоту самой высокой (флекс
+       align-items:stretch по умолчанию у .row) — но растягивается только
+       колонка-обёртка, а не сама .stat-card внутри неё. Без height:100%
+       карточки с более коротким текстом остаются короче соседних —
+       выглядит как "плитки разного размера". */
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     transition: transform 0.28s var(--ease), box-shadow 0.28s var(--ease), border-color 0.28s var(--ease);
 }
 .stat-card:hover {
@@ -465,6 +474,10 @@ h1, h2, h3, h4, h5, h6 {
     font-weight: 800;
     line-height: 1.05;
     letter-spacing: -0.03em;
+    /* Длинные значения без пробелов (домен+порт вроде addons.mozilla.org:8443)
+       раньше молча обрезались через overflow:hidden карточки — переносим
+       по символам вместо этого, чтобы адрес был виден целиком. */
+    overflow-wrap: anywhere;
 }
 .stat-label {
     color: var(--text-secondary);
@@ -634,6 +647,12 @@ select.form-select option { background-color: var(--surface-solid); color: #e9ec
     background: rgba(255, 255, 255, 0.028);
 }
 .table-modern tbody tr:last-child td { border-bottom: none; }
+
+/* Строка клиента, который сейчас показан крупно в hero-карточке наверху. */
+.js-client-row.is-hero-active td {
+    background: var(--brand-soft);
+    box-shadow: inset 2px 0 0 var(--brand);
+}
 
 /* ---------------------------------------------------------------------
    9. Бейджи статуса
@@ -841,9 +860,14 @@ select.form-select option { background-color: var(--surface-solid); color: #e9ec
     display: inline-block;
 }
 
-/* Тултипы Bootstrap под тёмную тему */
+/* Тултипы Bootstrap под тёмную тему.
+   Bootstrap 5.3 в [data-bs-theme=dark] считает, что тултип получит СВЕТЛЫЙ
+   фон, и задаёт --bs-tooltip-color тёмным (~#212529). Мы фон переопределили
+   на тёмный (var(--surface-solid)), но цвет текста остался дефолтным —
+   в итоге тёмный текст на тёмном фоне. Переопределяем оба свойства. */
 .tooltip .tooltip-inner {
     background: var(--surface-solid);
+    color: var(--text-primary);
     border: 1px solid var(--border-soft);
     box-shadow: var(--shadow-md);
     font-size: 0.78rem;

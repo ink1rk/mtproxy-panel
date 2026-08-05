@@ -62,6 +62,8 @@
         initToasts();
         initProgressBar();
         initQrLightbox();
+        initAddressWrap();
+        initHeroSelector();
     });
 
     /* --- Верхняя полоса загрузки: показывается на время fetch()/отправки форм.
@@ -126,6 +128,90 @@
                 PanelProgress.start();
             }
         });
+    }
+
+    /* --- Длинные значения без пробелов (домен+порт вроде addons.mozilla.org:8443
+       в карточке "Адрес подключения") при переносе ломались посреди слова.
+       Расставляем <wbr> после точек/двоеточий — перенос (если нужен) идёт
+       по границам, а не абы где. Собирается через DOM API (textContent +
+       createElement), без innerHTML — безопасно независимо от содержимого. --- */
+    function initAddressWrap() {
+        document.querySelectorAll(".stat-value.mono").forEach(function (el) {
+            var text = el.textContent;
+            if (!text || !/[.:]/.test(text)) return;
+            var parts = text.split(/([.:])/);
+            el.textContent = "";
+            parts.forEach(function (part) {
+                el.appendChild(document.createTextNode(part));
+                if (part === "." || part === ":") {
+                    el.appendChild(document.createElement("wbr"));
+                }
+            });
+        });
+    }
+
+    /* --- Крупная QR-карточка вверху страницы WG/VLESS раньше всегда
+       показывала только primary_client (по сути — последнее созданное
+       устройство), а переключить её на другого, уже существующего
+       клиента, было нельзя. Кнопка "Показать крупно" в строке таблицы
+       переносит выбранного клиента наверх, в ту же карточку. --- */
+    function initHeroSelector() {
+        var hero = document.getElementById("heroCard");
+        if (!hero) return;
+        var urlPrefix = hero.getAttribute("data-url-prefix") || "";
+
+        document.querySelectorAll(".js-select-hero").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var row = btn.closest(".js-client-row");
+                if (!row) return;
+                selectHeroClient(row);
+            });
+        });
+
+        function selectHeroClient(row) {
+            var id = row.getAttribute("data-client-id");
+            var name = row.getAttribute("data-client-name") || "";
+            var primary = row.getAttribute("data-client-primary") || "";
+            var secondary = row.getAttribute("data-client-secondary") || "";
+            var connection = row.getAttribute("data-client-connection") || "";
+            var traffic = row.getAttribute("data-client-traffic") || "";
+            var qr = row.getAttribute("data-client-qr") || "";
+
+            hero.setAttribute("data-active-client-id", id);
+
+            var nameEl = document.getElementById("heroClientName");
+            if (nameEl) nameEl.textContent = name;
+
+            var qrImg = document.getElementById("heroQrImage");
+            if (qrImg && qr) {
+                qrImg.src = qr;
+                qrImg.alt = "QR " + name;
+                qrImg.setAttribute("data-qr-caption", name);
+            }
+
+            var primaryEl = document.getElementById("heroPrimaryValue");
+            if (primaryEl) primaryEl.textContent = primary;
+
+            var connectionEl = document.getElementById("heroConnectionInfo");
+            if (connectionEl) {
+                connectionEl.textContent = (connection || "нет подключений") + (traffic ? " · " + traffic : "");
+            }
+
+            var downloadLink = document.getElementById("heroDownloadLink");
+            if (downloadLink) {
+                downloadLink.setAttribute("href", urlPrefix + "/peers/" + id + "/download");
+            }
+
+            var copyIcon = document.getElementById("heroCopyIcon");
+            if (copyIcon) copyIcon.setAttribute("data-copy", secondary);
+
+            document.querySelectorAll(".js-client-row").forEach(function (r) {
+                r.classList.remove("is-hero-active");
+            });
+            row.classList.add("is-hero-active");
+
+            hero.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
     }
 
     /* --- Лайтбокс QR: работает для ЛЮБОГО .qr-thumb на странице (в таблице
