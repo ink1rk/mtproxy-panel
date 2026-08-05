@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 import config
 import host_exec
-from firewall_manager import detect_wan_interface
+from firewall_manager import detect_wan_interface, wg_nat_status
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,19 @@ class CheckResult:
     name: str
     ok: bool
     detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class PeerDiagnosis:
+    """Диагноз одного WG-клиента по счётчикам handshake/transfer."""
+
+    name: str
+    has_handshake: bool
+    handshake_age_seconds: int | None
+    rx_bytes: int
+    tx_bytes: int
+    verdict: str
+    severity: str  # "ok" | "warning" | "error"
 
 
 @dataclass
@@ -168,3 +181,94 @@ def check_xray(*, listen_port: int) -> HealthReport:
     else:
         logger.info("%s", report.format())
     return report
+
+
+# ---------------------------------------------------------------------------
+# Диагностика "handshake есть, интернета нет" — самая частая жалоба.
+# Отвечает не только "OK/FAIL", но и человекочитаемым выводом с причиной,
+# чтобы не гонять руками wg show / iptables каждый раз.
+# ---------------------------------------------------------------------------
+def get_wg0_mtu() -> int | None:
+    result = host_exec.run(["ip", "-o", "link", "show", "dev", "wg0"], check=False)
+    if not result.ok:
+        return None
+    parts = result.stdout.split()
+    if "mtu" in parts:
+        idx = parts.index("mtu")
+        if idx + 1 < len(parts):
+            try:
+                return int(parts[idx + 1])
+            except ValueError:
+                return None
+    return None
+
+
+def diagnose_wireguard_routing(*, subnet: str, listen_port: int) -> HealthReport:
+    """Та же информация, что check_wireguard, но с MTU и без внешнего egress-запроса."""
+    wan = detect_wan_interface()
+    report = HealthReport(service="wireguard-routing")
+    report.checks.append(_check_systemd_active(config.WG_SYSTEMD_UNIT))
+    report.checks.append(_check_port(listen_port, "udp"))
+    status = wg_nat_status(subnet=subnet, listen_port=listen_port, wan=wan)
+    report.checks.append(CheckResult("NAT (MASQUERADE)", status["nat"], f"wan={wan}"))
+    report.checks.append(CheckResult("FORWARD accept для wg0", status["forward"], ""))
+    report.checks.append(CheckResult("DOCKER-USER accept для wg0", status["docker_user"], ""))
+    report.checks.append(CheckResult("INPUT accept UDP-порта", status["input_accept"], f"port={listen_port}"))
+    mtu = get_wg0_mtu()
+    report.checks.append(CheckResult("MTU интерфейса", mtu is not None, f"{mtu if mtu else 'н/д'}"))
+    return report
+
+
+def diagnose_peer(
+    *, name: str, handshake_epoch: int, rx_bytes: int, tx_bytes: int,
+) -> PeerDiagnosis:
+    """
+    Человекочитаемый вердикт по одному peer'у на основе handshake/трафика.
+    Главная цель — отличить "конфиг сервера сломан" от "проблема на стороне
+    клиента/сети" без часов ручного разбора логов.
+    """
+    import time
+
+    has_handshake = handshake_epoch > 0
+    age = int(time.time()) - handshake_epoch if has_handshake else None
+
+    if not has_handshake:
+        return PeerDiagnosis(
+            name=name, has_handshake=False, handshake_age_seconds=None,
+            rx_bytes=rx_bytes, tx_bytes=tx_bytes, severity="error",
+            verdict=(
+                "Клиент ни разу не подключался. Проверь: скачан ли АКТУАЛЬНЫЙ "
+                "QR/конфиг (ключи меняются при пересоздании устройства или "
+                "сброса сервера), верный ли Endpoint:порт, не блокирует ли "
+                "сеть клиента этот UDP-порт."
+            ),
+        )
+
+    # handshake есть, но получено мало, а сервер продолжает слать (keepalive
+    # вхолостую) — классический "подключился, интернета нет".
+    if rx_bytes < 2048 and tx_bytes > max(rx_bytes, 512) * 2:
+        return PeerDiagnosis(
+            name=name, has_handshake=True, handshake_age_seconds=age,
+            rx_bytes=rx_bytes, tx_bytes=tx_bytes, severity="warning",
+            verdict=(
+                f"Handshake прошёл, но реальный трафик от клиента почти не "
+                f"идёт (получено ~{rx_bytes} Б, сервер шлёт keepalive "
+                f"вхолостую). Маршрутизация/NAT сервера тут ни при чём — "
+                f"смотри на стороне клиента: другой активный VPN/антивирус с "
+                f"сетевым фильтром (Kerio, Cisco AnyConnect и т.п.), "
+                f"провайдер/DPI, ограничения самой сети до этого сервера."
+            ),
+        )
+
+    if rx_bytes >= 2048:
+        return PeerDiagnosis(
+            name=name, has_handshake=True, handshake_age_seconds=age,
+            rx_bytes=rx_bytes, tx_bytes=tx_bytes, severity="ok",
+            verdict="Трафик идёт нормально.",
+        )
+
+    return PeerDiagnosis(
+        name=name, has_handshake=True, handshake_age_seconds=age,
+        rx_bytes=rx_bytes, tx_bytes=tx_bytes, severity="warning",
+        verdict="Недостаточно данных для вывода — подключись и подожди немного, затем обнови страницу.",
+    )

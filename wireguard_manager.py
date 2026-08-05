@@ -1,14 +1,15 @@
 """
 WireGuard — native wg-quick@wg0 (systemd).
 
-Почему не Docker на Timeweb/Ubuntu 26.04:
-  - bridge DNAT ломался (нет цепочки DOCKER)
-  - host/bridge давали handshake без интернета
-  - AppArmor profile `wg` читает ключи ТОЛЬКО из /etc/wireguard/
-  - Docker FORWARD/NAT + nft мешали return-path
+Вся логика firewall/NAT — чистый Python (firewall_manager.py), без
+bash-скриптов: ни heredoc, ни временных .sh файлов на диске, ни
+process substitution. Каждая iptables-команда — отдельный
+host_exec.run([...]) со списком аргументов.
 
-Проверено на ams-1-vm-8cfh: native + PostUp wg-easy + DOCKER-USER
-→ ping 1.1.1.1 из netns-клиента OK.
+PostUp/PostDown в самом wg0.conf не используются: AppArmor-профиль
+`wg-quick` на Ubuntu 24.04+/26.04 может блокировать `iptables`/`ip link
+set mtu` изнутри PostUp (см. _relax_apparmor). NAT/FORWARD применяются
+отдельно, после поднятия интерфейса.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from pathlib import Path
 
 import config
 import host_exec
-from firewall_manager import detect_wan_interface
+from firewall_manager import detect_wan_interface, ensure_wg_nat_forward
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,28 @@ class WireGuardManager:
         wg_confs = config.WG_CONFIG_DIR / "wg_confs"
         wg_confs.mkdir(parents=True, exist_ok=True)
         return wg_confs / f"{config.WG_INTERFACE_NAME}.conf"
+
+    def _syncconf(self) -> host_exec.CommandResult:
+        """
+        wg syncconf без bash process substitution: `wg-quick strip` в
+        временный файл, затем `wg syncconf wg0 <файл>`. Чистый Python.
+        """
+        import tempfile
+
+        strip = host_exec.run(
+            ["wg-quick", "strip", str(self._system_conf())], check=False,
+        )
+        if not strip.ok:
+            return strip
+        fd, tmp_path = tempfile.mkstemp(prefix=".wg-stripped-")
+        try:
+            with open(fd, "w", encoding="utf-8") as handle:
+                handle.write(strip.stdout)
+            return host_exec.run(
+                ["wg", "syncconf", config.WG_INTERFACE_NAME, tmp_path], check=False,
+            )
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     def get_status(self) -> str:
         result = host_exec.systemctl("is-active", config.WG_SYSTEMD_UNIT, check=False)
@@ -119,80 +142,46 @@ class WireGuardManager:
 
     def _ensure_nat(self, *, subnet: str, listen_port: int) -> None:
         """
-        PostUp ровно как у проверенного годами рабочего wg-easy
-        (MASQUERADE, не SNAT на статичный IP — самовосстанавливается
-        при смене DHCP-адреса). Единственное отличие от wg-easy: там WG
-        живёт в отдельном netns контейнера, поэтому DOCKER-USER не нужен;
-        у нас wg0 на хосте — Docker ставит FORWARD policy DROP, поэтому
-        явный ACCEPT для wg0 обязателен.
+        PostUp ровно как у проверенного годами рабочего wg-easy (MASQUERADE,
+        не SNAT на статичный IP). Единственное отличие: там WG живёт в
+        отдельном netns контейнера (DOCKER-USER не нужен), у нас wg0 на
+        хосте — Docker ставит FORWARD policy DROP, поэтому явный ACCEPT
+        для wg0 обязателен. Реализация — чистый Python
+        (firewall_manager.ensure_wg_nat_forward), без shell-скриптов.
         """
         wan = detect_wan_interface()
-        network_cidr = subnet if "/" in subnet else f"{subnet}/24"
-
-        script = f"""
-set -e
-apply() {{
-  local IPT="$1"
-  $IPT -P FORWARD ACCEPT 2>/dev/null || true
-  $IPT -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || $IPT -I FORWARD 1 -i wg0 -j ACCEPT
-  $IPT -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || $IPT -I FORWARD 1 -o wg0 -j ACCEPT
-  if $IPT -L DOCKER-USER -n >/dev/null 2>&1; then
-    $IPT -C DOCKER-USER -i wg0 -j ACCEPT 2>/dev/null || $IPT -I DOCKER-USER 1 -i wg0 -j ACCEPT
-    $IPT -C DOCKER-USER -o wg0 -j ACCEPT 2>/dev/null || $IPT -I DOCKER-USER 1 -o wg0 -j ACCEPT
-  fi
-  $IPT -t nat -C POSTROUTING -s {network_cidr} -o {wan} -j MASQUERADE 2>/dev/null \\
-    || $IPT -t nat -I POSTROUTING 1 -s {network_cidr} -o {wan} -j MASQUERADE
-  $IPT -C INPUT -p udp -m udp --dport {listen_port} -j ACCEPT 2>/dev/null \\
-    || $IPT -I INPUT 1 -p udp -m udp --dport {listen_port} -j ACCEPT
-}}
-for IPT in iptables iptables-nft iptables-legacy; do
-  command -v "$IPT" >/dev/null 2>&1 || continue
-  apply "$IPT" || true
-done
-echo NAT_OK wan={wan} port={listen_port}
-"""
-        # Persist helper for boot / docker restart
-        helper = (
-            "#!/bin/bash\nset -e\n"
-            f"WG_SUBNET={network_cidr}\n"
-            f"WG_PORT={listen_port}\n"
-            + script
-        )
-        try:
-            host_exec.write_root_file(config.WG_NAT_HELPER_PATH, helper, mode=0o755)
-        except host_exec.HostExecError as exc:
-            logger.warning("NAT helper persist: %s", exc)
-
-        result = host_exec.run(["bash", "-c", script], check=False)
-        if not result.ok:
-            raise WireGuardError(f"NAT/FORWARD не применился: {result.output}")
-        logger.info("WG NAT: %s", result.output)
+        ensure_wg_nat_forward(subnet=subnet, listen_port=listen_port, wan=wan)
 
     def _relax_apparmor(self) -> None:
         """
         Ubuntu AppArmor profiles wg / wg-quick ломают native WG:
-        iptables-legacy exec denied, иногда `ip link set mtu` → Permission denied.
-        Снимаем профили (идемпотентно).
+        iptables-legacy exec denied, иногда `ip link set mtu` → Permission
+        denied. Снимаем профили (идемпотентно). Чистый Python — никакого
+        bash -c.
         """
-        script = r"""
-set +e
-mkdir -p /etc/apparmor.d/disable
-for p in wg wg-quick; do
-  src="/etc/apparmor.d/$p"
-  if [ -f "$src" ] && [ ! -e "/etc/apparmor.d/disable/$p" ]; then
-    ln -sf "$src" "/etc/apparmor.d/disable/$p"
-  fi
-  apparmor_parser -R "$src" 2>/dev/null || true
-done
-# iptables → nft: совместимее с Docker и AppArmor, если профиль вернётся
-if [ -x /usr/sbin/iptables-nft ]; then
-  update-alternatives --set iptables /usr/sbin/iptables-nft >/dev/null 2>&1 || true
-  update-alternatives --set ip6tables /usr/sbin/ip6tables-nft >/dev/null 2>&1 || true
-fi
-echo APPARMOR_RELAXED
-"""
-        result = host_exec.run(["bash", "-c", script], check=False)
-        logger.info("AppArmor WG: %s", result.output)
+        disable_dir = Path("/etc/apparmor.d/disable")
+        try:
+            disable_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("AppArmor disable dir: %s", exc)
+        for profile in ("wg", "wg-quick"):
+            src = Path(f"/etc/apparmor.d/{profile}")
+            link = disable_dir / profile
+            if src.exists() and not link.exists():
+                try:
+                    link.symlink_to(src)
+                except OSError as exc:
+                    logger.warning("AppArmor symlink %s: %s", profile, exc)
+            host_exec.run(["apparmor_parser", "-R", str(src)], check=False)
+
+        # iptables -> nft: совместимее с Docker, если профиль когда-то вернётся.
+        nft_bin = Path("/usr/sbin/iptables-nft")
+        if nft_bin.exists():
+            host_exec.run(["update-alternatives", "--set", "iptables", str(nft_bin)], check=False)
+        ip6_nft_bin = Path("/usr/sbin/ip6tables-nft")
+        if ip6_nft_bin.exists():
+            host_exec.run(["update-alternatives", "--set", "ip6tables", str(ip6_nft_bin)], check=False)
+        logger.info("AppArmor WG profiles relaxed (Python)")
 
     def ensure_server_running(
         self,
@@ -211,14 +200,7 @@ echo APPARMOR_RELAXED
         host_exec.systemctl("enable", config.WG_SYSTEMD_UNIT, check=False)
         if self.is_running():
             # sync peers без полного down/up
-            sync = host_exec.run(
-                [
-                    "bash", "-c",
-                    f"wg syncconf {config.WG_INTERFACE_NAME} "
-                    f"<(wg-quick strip {self._system_conf()})",
-                ],
-                check=False,
-            )
+            sync = self._syncconf()
             if not sync.ok:
                 logger.warning("syncconf failed (%s) — restart unit", sync.output)
                 host_exec.systemctl("restart", config.WG_SYSTEMD_UNIT, check=False)
@@ -277,14 +259,7 @@ echo APPARMOR_RELAXED
             )
             return
         self.write_config(conf_text, listen_port=listen_port, subnet=subnet)
-        sync = host_exec.run(
-            [
-                "bash", "-c",
-                f"wg syncconf {config.WG_INTERFACE_NAME} "
-                f"<(wg-quick strip {self._system_conf()})",
-            ],
-            check=False,
-        )
+        sync = self._syncconf()
         if not sync.ok:
             logger.warning("syncconf failed — full ensure: %s", sync.output)
             self.ensure_server_running(

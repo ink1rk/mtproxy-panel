@@ -88,6 +88,33 @@ class WireGuardService:
             for peer in self._repository.get_all_peers()
         }
 
+    def diagnostics(self) -> dict | None:
+        """
+        Встроенная диагностика вместо ручного разбора логов/iptables.
+        Возвращает routing-чеки (NAT/FORWARD/MTU/...) + вердикт по каждому
+        peer'у (handshake/трафик), None если сервер ещё не настроен.
+        """
+        server_config = self.get_server_config()
+        if server_config is None:
+            return None
+        routing = vpn_health.diagnose_wireguard_routing(
+            listen_port=server_config.listen_port, subnet=server_config.subnet,
+        )
+        handshakes = self._manager.get_peer_last_handshakes()
+        transfers = self._manager.get_peer_transfer_stats()
+        peers = []
+        for peer in self._repository.get_all_peers():
+            rx, tx = transfers.get(peer.public_key, (0, 0))
+            peers.append(
+                vpn_health.diagnose_peer(
+                    name=peer.name,
+                    handshake_epoch=handshakes.get(peer.public_key, 0),
+                    rx_bytes=rx,
+                    tx_bytes=tx,
+                )
+            )
+        return {"routing": routing, "peers": peers}
+
     def get_peer_traffic_labels(self) -> dict[int, str]:
         transfer_by_pubkey = self._manager.get_peer_transfer_stats()
         labels: dict[int, str] = {}

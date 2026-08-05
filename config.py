@@ -218,7 +218,6 @@ XRAY_SHORT_ID_BYTES: int = 8  # -> 16 hex символов
 NFT_TABLE_NAME: str = "mtproxy-panel"
 NFT_RULES_PATH: str = "/etc/nftables.d/mtproxy-panel.nft"
 SYSCTL_FORWARD_PATH: str = "/etc/sysctl.d/99-mtproxy-panel-forward.conf"
-WG_NAT_HELPER_PATH: str = "/usr/local/sbin/mtproxy-wg-nat.sh"
 # Полный default route (IPv4 + IPv6) — ровно как у проверенного годами
 # рабочего wg-easy сервера (41+ ГБ трафика с реального iPhone). Split
 # 0.0.0.0/1+128.0.0.0/1 пробовали для Windows — не решило проблему и

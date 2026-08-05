@@ -130,3 +130,104 @@ class FirewallManager:
             host_exec.run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
         except host_exec.HostExecError as exc:
             raise FirewallError(f"Не удалось включить ip_forward: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# WireGuard NAT/FORWARD — чистый Python, без shell-скриптов.
+#
+# Раньше это была bash-эвристика (heredoc, записанная как отдельный .sh файл
+# в /usr/local/sbin с chmod +x — источник "Permission denied" и вообще лишней
+# сущности, которую приходится отдельно поддерживать). Теперь каждое правило —
+# отдельный host_exec.run(['iptables', ...]) вызов со списком аргументов:
+# никакого shell-экранирования, никаких временных файлов, идемпотентно
+# (проверка -C перед -I).
+# ---------------------------------------------------------------------------
+def _iptables_backends() -> list[str]:
+    return [b for b in ("iptables", "iptables-nft", "iptables-legacy") if host_exec.which(b)]
+
+
+def _ensure_rule(ipt: str, insert_args: list[str], check_args: list[str]) -> bool:
+    """Вставляет правило, если его ещё нет. Возвращает True, если применилось."""
+    if host_exec.run([ipt, *check_args], check=False).ok:
+        return True
+    return host_exec.run([ipt, *insert_args], check=False).ok
+
+
+def ensure_wg_nat_forward(*, subnet: str, listen_port: int, wan: str) -> dict:
+    """
+    PostUp ровно как у проверенного годами рабочего wg-easy:
+      - MASQUERADE (не SNAT на статичный IP — переживает смену DHCP-адреса)
+      - FORWARD ACCEPT для wg0 (Docker ставит policy DROP)
+      - DOCKER-USER ACCEPT для wg0, если цепочка есть
+      - INPUT ACCEPT на UDP-порт WireGuard
+    Применяется на все доступные бэкенды iptables (nft/legacy), т.к. Docker
+    и хостовый alternatives иногда расходятся.
+    """
+    network_cidr = subnet if "/" in subnet else f"{subnet}/24"
+    backends = _iptables_backends()
+    for ipt in backends:
+        host_exec.run([ipt, "-P", "FORWARD", "ACCEPT"], check=False)
+        _ensure_rule(
+            ipt, ["-I", "FORWARD", "1", "-i", "wg0", "-j", "ACCEPT"],
+            ["-C", "FORWARD", "-i", "wg0", "-j", "ACCEPT"],
+        )
+        _ensure_rule(
+            ipt, ["-I", "FORWARD", "1", "-o", "wg0", "-j", "ACCEPT"],
+            ["-C", "FORWARD", "-o", "wg0", "-j", "ACCEPT"],
+        )
+        if host_exec.run([ipt, "-L", "DOCKER-USER", "-n"], check=False).ok:
+            _ensure_rule(
+                ipt, ["-I", "DOCKER-USER", "1", "-i", "wg0", "-j", "ACCEPT"],
+                ["-C", "DOCKER-USER", "-i", "wg0", "-j", "ACCEPT"],
+            )
+            _ensure_rule(
+                ipt, ["-I", "DOCKER-USER", "1", "-o", "wg0", "-j", "ACCEPT"],
+                ["-C", "DOCKER-USER", "-o", "wg0", "-j", "ACCEPT"],
+            )
+        _ensure_rule(
+            ipt,
+            ["-t", "nat", "-I", "POSTROUTING", "1", "-s", network_cidr, "-o", wan, "-j", "MASQUERADE"],
+            ["-t", "nat", "-C", "POSTROUTING", "-s", network_cidr, "-o", wan, "-j", "MASQUERADE"],
+        )
+        _ensure_rule(
+            ipt,
+            ["-I", "INPUT", "1", "-p", "udp", "-m", "udp", "--dport", str(listen_port), "-j", "ACCEPT"],
+            ["-C", "INPUT", "-p", "udp", "-m", "udp", "--dport", str(listen_port), "-j", "ACCEPT"],
+        )
+    logger.info("WG NAT (Python): wan=%s port=%s backends=%s", wan, listen_port, backends)
+    return {"wan": wan, "port": listen_port, "backends": backends}
+
+
+def wg_nat_status(*, subnet: str, listen_port: int, wan: str) -> dict[str, bool]:
+    """Для диагностики: что из правил реально применено сейчас."""
+    network_cidr = subnet if "/" in subnet else f"{subnet}/24"
+    ipt = "iptables"
+    if not host_exec.which(ipt):
+        backends = _iptables_backends()
+        ipt = backends[0] if backends else "iptables"
+    nat = host_exec.run(
+        [ipt, "-t", "nat", "-C", "POSTROUTING", "-s", network_cidr, "-o", wan, "-j", "MASQUERADE"],
+        check=False,
+    ).ok
+    forward_in = host_exec.run(
+        [ipt, "-C", "FORWARD", "-i", "wg0", "-j", "ACCEPT"], check=False,
+    ).ok
+    forward_out = host_exec.run(
+        [ipt, "-C", "FORWARD", "-o", "wg0", "-j", "ACCEPT"], check=False,
+    ).ok
+    input_accept = host_exec.run(
+        [ipt, "-C", "INPUT", "-p", "udp", "-m", "udp", "--dport", str(listen_port), "-j", "ACCEPT"],
+        check=False,
+    ).ok
+    docker_user_ok = True
+    if host_exec.run([ipt, "-L", "DOCKER-USER", "-n"], check=False).ok:
+        docker_user_ok = (
+            host_exec.run([ipt, "-C", "DOCKER-USER", "-i", "wg0", "-j", "ACCEPT"], check=False).ok
+            and host_exec.run([ipt, "-C", "DOCKER-USER", "-o", "wg0", "-j", "ACCEPT"], check=False).ok
+        )
+    return {
+        "nat": nat,
+        "forward": forward_in and forward_out,
+        "docker_user": docker_user_ok,
+        "input_accept": input_accept,
+    }

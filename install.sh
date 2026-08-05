@@ -647,17 +647,18 @@ EOF
         log "nftables таблица mtproxy-panel применена."
     fi
 
-    # Docker ставит FORWARD DROP — сразу ставим ACCEPT для wg0.
+    # Docker ставит FORWARD DROP — юнит переприменит ACCEPT для wg0 при
+    # каждом рестарте Docker. Сразу не запускаем: venv ещё не создан на
+    # этом шаге install.sh — панель сама применит NAT при своём старте
+    # (WireGuardService.ensure_ready(), см. main.py).
     install_wg_forward_helper
-    as_root bash "${SCRIPT_DIR}/tools/fix_wg_forward.sh" || true
 }
 
 install_wg_forward_helper() {
     # После рестарта Docker DOCKER-USER очищается — поднимаем правила снова.
-    # Панель при первом ensure_ready() пишет /usr/local/sbin/mtproxy-wg-nat.sh
-    # с уже подставленными реальными subnet/port/wan — предпочитаем его;
-    # пока панель ещё не стартовала (самый первый install), используем
-    # generic tools/fix_wg_forward.sh с дефолтами (443/10.8.0.0/24).
+    # Вызывает venv-python (tools/wg_reapply_nat.py -> vpn_service ->
+    # firewall_manager.ensure_wg_nat_forward) — ни одной shell-строки,
+    # вся логика в коде панели.
     local unit_path="/etc/systemd/system/mtproxy-wg-forward.service"
     local unit_content
     unit_content="$(cat <<EOF
@@ -670,8 +671,7 @@ PartOf=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c '/usr/local/sbin/mtproxy-wg-nat.sh 2>/dev/null || ${SCRIPT_DIR}/tools/fix_wg_forward.sh'
-ExecStartPost=/bin/true
+ExecStart=${VENV_DIR}/bin/python ${SCRIPT_DIR}/tools/wg_reapply_nat.py
 
 [Install]
 WantedBy=multi-user.target docker.service

@@ -58,6 +58,7 @@ async def wireguard_page(request: Request) -> HTMLResponse:
     connection_labels: dict[int, str] = {}
     traffic_labels: dict[int, str] = {}
     primary_peer = None
+    diagnostics = None
 
     service, init_error = _try_get_wg_service()
     if init_error is not None:
@@ -77,6 +78,10 @@ async def wireguard_page(request: Request) -> HTMLResponse:
             traffic_labels = service.get_peer_traffic_labels()
             if primary_peer is None and peers:
                 primary_peer = peers[0]
+            try:
+                diagnostics = service.diagnostics()
+            except Exception:  # noqa: BLE001 — диагностика не должна ронять страницу
+                logger.exception("Ошибка диагностики WireGuard")
 
     return templates.TemplateResponse(
         request=request,
@@ -88,6 +93,7 @@ async def wireguard_page(request: Request) -> HTMLResponse:
             "status": status,
             "connection_labels": connection_labels,
             "traffic_labels": traffic_labels,
+            "diagnostics": diagnostics,
             "error_message": error_message,
             "info_message": info_message,
             "username": request.session.get(auth.SESSION_USER_KEY),
