@@ -443,6 +443,44 @@ class XrayService:
             short_id=short_id,
         )
 
+    def ensure_ready(self) -> VlessClient | None:
+        """
+        Без ручных шагов: сервер + клиент с QR (аналог WireGuardService.ensure_ready).
+        """
+        if not config.XRAY_AUTO_PROVISION:
+            self.ensure_running_if_configured()
+            clients = self.list_clients()
+            return clients[0] if clients else None
+
+        server_config = self.get_server_config()
+        if server_config is None:
+            logger.info("Xray auto-provision: создаю сервер")
+            try:
+                server_config = self.setup_server(
+                    listen_port=config.XRAY_DEFAULT_PORT,
+                    dest=config.XRAY_DEFAULT_DEST,
+                    server_name=config.XRAY_DEFAULT_SERVER_NAMES[0],
+                )
+            except VpnServiceError as exc:
+                logger.error("Xray auto-provision setup_server: %s", exc)
+                return None
+
+        clients = self.list_clients()
+        if not clients:
+            logger.info(
+                "Xray auto-provision: создаю клиента %r", config.XRAY_DEFAULT_CLIENT_NAME,
+            )
+            try:
+                client = self.add_client(config.XRAY_DEFAULT_CLIENT_NAME)
+            except VpnServiceError as exc:
+                logger.error("Xray auto-provision add_client: %s", exc)
+                return None
+        else:
+            self.ensure_running_if_configured()
+            client = clients[0]
+
+        return client
+
     def ensure_running_if_configured(self) -> None:
         server_config = self._repository.get_server_config()
         if server_config is None:

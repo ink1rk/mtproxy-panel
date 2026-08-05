@@ -68,9 +68,11 @@ logger = logging.getLogger(__name__)
 
 def _ensure_vpn_servers_running() -> None:
     """
-    WireGuard: авто-сервер + peer с QR (ensure_ready).
-    Xray: поднимает, если уже настроен.
-    Ошибки только логируются — панель должна стартовать.
+    Полностью автоматический старт (без ручных шагов в UI):
+      WireGuard — сервер + peer с QR
+      Xray      — сервер + VLESS-клиент с QR
+      MTProxy   — один прокси-контейнер, если ни одного ещё нет
+    Ошибки только логируются — панель должна стартовать в любом случае.
     """
     try:
         from vpn_service import VpnServiceError, WireGuardService
@@ -89,11 +91,27 @@ def _ensure_vpn_servers_running() -> None:
     try:
         from vpn_service import VpnServiceError, XrayService
 
-        XrayService().ensure_running_if_configured()
+        client = XrayService().ensure_ready()
+        if client is not None:
+            logger.info("Xray готов: client=%s qr=%s", client.name, client.qr_filename)
     except VpnServiceError as exc:
         logger.warning("Xray-сервер не удалось поднять при старте: %s", exc)
     except Exception:  # noqa: BLE001
         logger.exception("Неожиданная ошибка при автозапуске Xray")
+
+    try:
+        from service import ProxyService, ProxyServiceError
+
+        proxy_service = ProxyService()
+        if not proxy_service.list_proxies():
+            proxy = proxy_service.create_proxy()
+            logger.info(
+                "MTProxy готов: container=%s port=%s", proxy.container_name, proxy.port,
+            )
+    except ProxyServiceError as exc:
+        logger.warning("MTProxy не удалось создать при старте: %s", exc)
+    except Exception:  # noqa: BLE001
+        logger.exception("Неожиданная ошибка при автосоздании MTProxy")
 
 
 @asynccontextmanager

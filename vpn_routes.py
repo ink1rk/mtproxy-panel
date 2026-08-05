@@ -245,6 +245,11 @@ async def vless_page(request: Request) -> HTMLResponse:
         error_message = init_error
     else:
         assert service is not None
+        try:
+            service.ensure_ready()
+        except VpnServiceError as exc:
+            logger.error("Xray ensure_ready: %s", exc)
+            error_message = str(exc)
         server_config = service.get_server_config()
         if server_config is not None:
             clients = service.list_clients()

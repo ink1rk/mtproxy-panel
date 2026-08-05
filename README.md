@@ -54,11 +54,14 @@ install.sh              # python + docker(MTProxy) + wireguard + xray + nftables
 | Сервис        | Протокол | По умолчанию |
 |---------------|----------|--------------|
 | Панель        | TCP      | 8000         |
-| WireGuard     | UDP      | 51820        |
+| WireGuard     | UDP      | 443          |
 | VLESS         | TCP      | 8443         |
 | MTProxy       | TCP      | случайный    |
 
-В **облачном firewall** (Timeweb / Hetzner / …) откройте `51820/udp`,
+WireGuard намеренно слушает `443/udp` (не классический `51820`) — некоторые
+сети/провайдеры душат нестандартные UDP-порты, а `443` обычно пропускают.
+
+В **облачном firewall** (Timeweb / Hetzner / …) откройте `443/udp`,
 `8443/tcp`, `8000/tcp` и порты MTProxy.
 
 ## Установка

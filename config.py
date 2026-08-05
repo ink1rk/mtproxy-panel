@@ -197,6 +197,9 @@ XRAY_DEFAULT_PORT: int = 8443
 # Certificate record). www.cloudflare.com проверен; www.microsoft.com — нет.
 XRAY_DEFAULT_DEST: str = "www.cloudflare.com:443"
 XRAY_DEFAULT_SERVER_NAMES: tuple[str, ...] = ("www.cloudflare.com",)
+# Авто: при старте панели поднять Xray + создать клиента (без ручных шагов).
+XRAY_AUTO_PROVISION: bool = True
+XRAY_DEFAULT_CLIENT_NAME: str = "main"
 # Официальный режим VLESS+REALITY + Vision.
 XRAY_FLOW: str = "xtls-rprx-vision"
 # Xray-core >= 26.7.11 при пустом minClientVer подставляет 26.3.27 и режет

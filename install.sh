@@ -289,6 +289,31 @@ ensure_vpn_stack() {
         as_root systemctl enable mtproxy-wg-forward.service >/dev/null 2>&1 || true
     fi
 
+    relax_wg_apparmor
+}
+
+# ---------------------------------------------------------------------------
+# AppArmor 'wg' / 'wg-quick' на Ubuntu 24.04+ мешает native WireGuard:
+#   - профиль допускает exec только xtables-nft-multi (легаси iptables → deny)
+#   - netlink-медиация иногда даёт RTNETLINK Permission denied на
+#     `ip link set mtu` внутри wg-quick//ip суб-профиля
+# Снимаем профили один раз при установке (идемпотентно). WireGuardManager
+# на всякий случай повторяет то же самое перед каждым ensure_server_running.
+# ---------------------------------------------------------------------------
+relax_wg_apparmor() {
+    if ! command -v apparmor_parser >/dev/null 2>&1; then
+        return
+    fi
+    log "Снимаю AppArmor-профили wg/wg-quick (ломают native WireGuard на Ubuntu)."
+    as_root mkdir -p /etc/apparmor.d/disable
+    local profile
+    for profile in wg wg-quick; do
+        if [[ -f "/etc/apparmor.d/${profile}" ]] && [[ ! -e "/etc/apparmor.d/disable/${profile}" ]]; then
+            as_root ln -sf "/etc/apparmor.d/${profile}" "/etc/apparmor.d/disable/${profile}"
+        fi
+        as_root apparmor_parser -R "/etc/apparmor.d/${profile}" >/dev/null 2>&1 || true
+    done
+
     # nftables service + include наших правил
     if has_systemd; then
         as_root systemctl enable nftables >/dev/null 2>&1 || true
@@ -594,7 +619,7 @@ ensure_firewall_allows_panel() {
         && as_root ufw status 2>/dev/null | grep -qi "Status: active"; then
         log "Обнаружен активный ufw — открываю порты панели и VPN."
         as_root ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
-        as_root ufw allow 51820/udp >/dev/null 2>&1 || true
+        as_root ufw allow 443/udp >/dev/null 2>&1 || true
         as_root ufw allow 8443/tcp >/dev/null 2>&1 || true
     fi
 
@@ -629,6 +654,10 @@ EOF
 
 install_wg_forward_helper() {
     # После рестарта Docker DOCKER-USER очищается — поднимаем правила снова.
+    # Панель при первом ensure_ready() пишет /usr/local/sbin/mtproxy-wg-nat.sh
+    # с уже подставленными реальными subnet/port/wan — предпочитаем его;
+    # пока панель ещё не стартовала (самый первый install), используем
+    # generic tools/fix_wg_forward.sh с дефолтами (443/10.8.0.0/24).
     local unit_path="/etc/systemd/system/mtproxy-wg-forward.service"
     local unit_content
     unit_content="$(cat <<EOF
@@ -641,7 +670,7 @@ PartOf=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=${SCRIPT_DIR}/tools/fix_wg_forward.sh
+ExecStart=/bin/bash -c '/usr/local/sbin/mtproxy-wg-nat.sh 2>/dev/null || ${SCRIPT_DIR}/tools/fix_wg_forward.sh'
 ExecStartPost=/bin/true
 
 [Install]
@@ -719,7 +748,7 @@ main() {
         log " ВНИМАНИЕ: systemd не найден — native VPN требует systemd."
         log " PID процесса:    $(cat "${PID_FILE}" 2>/dev/null || echo '?')"
     fi
-    log " Облачный firewall: откройте 51820/udp, 8443/tcp, ${APP_PORT}/tcp"
+    log " Облачный firewall: откройте 443/udp (WireGuard), 8443/tcp (VLESS), ${APP_PORT}/tcp (панель)"
     log "==============================================================="
 }
 
