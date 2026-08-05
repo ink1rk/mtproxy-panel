@@ -1,160 +1,227 @@
 """
-Docker-слой для Xray (VLESS+REALITY) VPN сервера.
+Native Xray: бинарник + systemd unit xray.service.
 
-Как и WireGuard, Xray работает как ОДИН постоянный контейнер-сервер,
-обслуживающий множество клиентов через один и тот же TCP-порт. В отличие
-от WireGuard, у Xray нет простого аналога 'wg syncconf' для горячего
-обновления списка клиентов через Docker SDK без дополнительной настройки
-gRPC API — поэтому обновление списка клиентов применяется через
-перезапись config.json и контролируемый перезапуск контейнера
-(быстрая операция, не создающая "полуготовых" состояний благодаря
-проверке статуса после каждого перезапуска).
+Конфиг: /usr/local/etc/xray/config.json (и зеркало в data/xray/).
+Список клиентов применяется перезаписью config.json + restart unit.
 """
 from __future__ import annotations
 
 import json
 import logging
 import time
-
-import docker
-from docker.errors import APIError, NotFound
-from docker.models.containers import Container
+from pathlib import Path
 
 import config
+import host_exec
+import utils
+from firewall_manager import FirewallError, FirewallManager
 
 logger = logging.getLogger(__name__)
 
 
-class XrayDockerError(RuntimeError):
-    """Ошибка при работе с Docker-контейнером Xray-сервера."""
+class XrayError(RuntimeError):
+    """Ошибка native Xray-сервера."""
+
+
+XrayDockerError = XrayError
 
 
 class XrayManager:
-    """Управляет жизненным циклом единственного контейнера Xray-сервера."""
+    """Управляет native Xray через systemd."""
 
     def __init__(self) -> None:
+        binary = config.XRAY_BINARY_PATH
+        if not Path(binary).exists() and host_exec.which("xray") is None:
+            raise XrayError(
+                f"Xray не установлен ({binary} не найден). Запустите bash install.sh"
+            )
         try:
-            self._client = docker.from_env()
-            self._client.ping()
-        except Exception as exc:
-            raise XrayDockerError("Docker daemon недоступен для управления Xray-сервером") from exc
-
-    def _get_container(self) -> Container | None:
-        try:
-            return self._client.containers.get(config.XRAY_CONTAINER_NAME)
-        except NotFound:
-            return None
+            host_exec.require_binaries("systemctl", "nft")
+            self._firewall = FirewallManager()
+        except (host_exec.HostExecError, FirewallError) as exc:
+            raise XrayError(str(exc)) from exc
+        self._unit = config.XRAY_SYSTEMD_UNIT
+        self._binary = binary if Path(binary).exists() else "xray"
 
     def is_running(self) -> bool:
-        container = self._get_container()
-        if container is None:
-            return False
-        container.reload()
-        return container.status == "running"
+        return self.get_status() == "running"
 
     def get_status(self) -> str:
-        container = self._get_container()
-        if container is None:
+        conf = Path(config.XRAY_SYSTEM_CONF_PATH)
+        if not conf.exists() and not self._unit_loaded():
             return "missing"
-        container.reload()
-        return container.status
+        result = host_exec.systemctl("is-active", self._unit, check=False)
+        state = (result.stdout or result.stderr).strip()
+        if state == "active":
+            return "running"
+        if state == "failed":
+            return "failed"
+        if state in {"inactive", "dead"}:
+            return "stopped"
+        return state or "stopped"
 
-    def _write_config_file(self, config_json: dict) -> None:
-        config_path = config.XRAY_CONFIG_DIR / "config.json"
-        config_path.write_text(json.dumps(config_json, indent=2, ensure_ascii=False), encoding="utf-8")
+    def _unit_loaded(self) -> bool:
+        result = host_exec.systemctl("cat", self._unit, check=False)
+        return result.ok
 
-    def ensure_server_running(self, listen_port: int, config_json: dict) -> None:
-        """
-        Пишет config.json и создаёт (если не существует) / запускает контейнер
-        Xray-сервера. Идемпотентно: если контейнер уже работает — просто
-        обновляет файл конфигурации (без применения — для применения у новых
-        клиентов используйте apply_config()).
-        """
-        self._write_config_file(config_json)
+    def write_config(self, config_json: dict) -> None:
+        text = json.dumps(config_json, indent=2, ensure_ascii=False) + "\n"
+        # Валидация до записи в /usr/local/etc
+        self._validate_config(text)
+        host_exec.write_root_file(config.XRAY_SYSTEM_CONF_PATH, text, mode=0o644)
+        mirror = config.XRAY_CONFIG_DIR / "config.json"
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        mirror.write_text(text, encoding="utf-8")
 
-        container = self._get_container()
-        if container is not None:
-            container.reload()
-            if container.status == "running":
-                return
-            logger.info("Контейнер Xray существует, но не запущен — запускаю")
-            try:
-                container.start()
-            except APIError as exc:
-                raise XrayDockerError(f"Не удалось запустить контейнер Xray: {exc}") from exc
-            self._wait_running(container)
-            return
+    def _validate_config(self, text: str) -> None:
+        import os
+        import tempfile
 
-        logger.info("Создаю контейнер Xray-сервера на порту %d/tcp", listen_port)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as handle:
+            handle.write(text)
+            tmp = handle.name
         try:
-            container = self._client.containers.run(
-                config.XRAY_DOCKER_IMAGE,
-                name=config.XRAY_CONTAINER_NAME,
-                detach=True,
-                restart_policy={"Name": "unless-stopped"},
-                ports={f"{listen_port}/tcp": listen_port},
-                volumes={
-                    str(config.XRAY_CONFIG_DIR / "config.json"): {
-                        "bind": "/etc/xray/config.json", "mode": "ro",
-                    }
-                },
+            os.chmod(tmp, 0o644)
+            result = host_exec.run(
+                [self._binary, "run", "-test", "-c", tmp],
+                check=False,
+                timeout=20.0,
             )
-        except APIError as exc:
-            raise XrayDockerError(f"Не удалось создать контейнер Xray: {exc}") from exc
+            if not result.ok:
+                raise XrayError(
+                    f"config.json не прошёл проверку xray -test: {result.output}"
+                )
+        finally:
+            Path(tmp).unlink(missing_ok=True)
 
-        self._wait_running(container)
-
-    def apply_config(self, config_json: dict) -> None:
-        """
-        Перезаписывает config.json и перезапускает контейнер, чтобы применить
-        изменения (добавление/удаление клиента). Проверяет, что контейнер
-        успешно поднялся после перезапуска — иначе поднимает исключение,
-        не оставляя сервер в нерабочем состоянии незамеченным.
-        """
-        self._write_config_file(config_json)
-
-        container = self._get_container()
-        if container is None:
-            raise XrayDockerError("Контейнер Xray не найден — сервер ещё не настроен")
+    def ensure_server_running(
+        self,
+        listen_port: int,
+        config_json: dict,
+        *,
+        wg_port: int | None = None,
+        wg_subnet: str | None = None,
+    ) -> None:
+        self.write_config(config_json)
+        self._ensure_systemd_unit()
+        try:
+            self._firewall.ensure(
+                wg_port=wg_port,
+                xray_port=listen_port,
+                wg_subnet=wg_subnet,
+            )
+        except FirewallError as exc:
+            raise XrayError(str(exc)) from exc
 
         try:
-            container.restart(timeout=10)
-        except APIError as exc:
-            raise XrayDockerError(f"Не удалось перезапустить контейнер Xray: {exc}") from exc
+            host_exec.systemctl("enable", self._unit)
+            host_exec.systemctl("restart", self._unit)
+        except host_exec.HostExecError as exc:
+            logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
+            raise XrayError(f"Не удалось запустить {self._unit}: {exc}\n{logs}") from exc
 
-        self._wait_running(container)
-        logger.info("Конфигурация Xray применена (перезапуск контейнера)")
+        self._wait_running(listen_port)
 
-    def _wait_running(self, container: Container) -> None:
-        deadline = time.monotonic() + config.DOCKER_XRAY_START_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            container.reload()
-            if container.status == "running":
-                return
-            if container.status in {"exited", "dead"}:
-                raise XrayDockerError(
-                    f"Контейнер Xray завершился со статусом '{container.status}' — проверьте config.json"
+    def apply_config(
+        self,
+        config_json: dict,
+        *,
+        listen_port: int | None = None,
+        wg_port: int | None = None,
+        wg_subnet: str | None = None,
+    ) -> None:
+        self.write_config(config_json)
+        if listen_port is not None:
+            try:
+                self._firewall.ensure(
+                    wg_port=wg_port,
+                    xray_port=listen_port,
+                    wg_subnet=wg_subnet,
                 )
-            time.sleep(0.5)
-        raise XrayDockerError("Контейнер Xray не перешёл в статус 'running' за отведённое время")
+            except FirewallError as exc:
+                raise XrayError(str(exc)) from exc
+        try:
+            host_exec.systemctl("restart", self._unit)
+        except host_exec.HostExecError as exc:
+            raise XrayError(f"Не удалось перезапустить Xray: {exc}") from exc
+        self._wait_running(listen_port)
+        logger.info("Конфигурация Xray применена (restart %s)", self._unit)
+
+    def _ensure_systemd_unit(self) -> None:
+        """Гарантирует unit-файл, указывающий на наш config path."""
+        unit_path = Path(config.XRAY_SYSTEMD_UNIT_PATH)
+        desired = f"""[Unit]
+Description=Xray Service (VLESS+REALITY, managed by mtproxy-panel)
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={self._binary} run -c {config.XRAY_SYSTEM_CONF_PATH}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1000000
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+"""
+        current = ""
+        if unit_path.exists():
+            try:
+                current = unit_path.read_text(encoding="utf-8")
+            except OSError:
+                current = ""
+        if config.XRAY_SYSTEM_CONF_PATH not in current or self._binary not in current:
+            host_exec.write_root_file(str(unit_path), desired, mode=0o644)
+            host_exec.systemctl("daemon-reload")
+
+    def _wait_running(self, listen_port: int | None = None) -> None:
+        """
+        systemd 'active' для Type=simple означает лишь что процесс форкнулся —
+        сокет может забиндиться на 100-300мс позже (особенно первый запуск,
+        когда Xray ещё генерирует внутренние структуры REALITY). Если health
+        check запускается сразу после этого, порт иногда ещё не слушает,
+        setup_server() считает это ошибкой и откатывает только что поднятый
+        сервер. Поэтому здесь же дожидаемся реального accept() на порту.
+        """
+        deadline = time.monotonic() + config.XRAY_START_TIMEOUT_SECONDS
+        became_active = False
+        while time.monotonic() < deadline:
+            status = self.get_status()
+            if status == "running":
+                became_active = True
+                if listen_port is None:
+                    return
+                if utils.check_tcp_port_open("127.0.0.1", listen_port, timeout=3.0):
+                    return
+            if status == "failed":
+                logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
+                raise XrayError(f"{self._unit} упал:\n{logs}")
+            time.sleep(0.4)
+        logs = "\n".join(host_exec.journalctl_unit(self._unit, lines=40))
+        if became_active:
+            raise XrayError(
+                f"{self._unit} активен, но порт {listen_port} не открылся за "
+                f"{config.XRAY_START_TIMEOUT_SECONDS:.0f}с\n{logs}"
+            )
+        raise XrayError(
+            f"{self._unit} не стал active за {config.XRAY_START_TIMEOUT_SECONDS:.0f}с\n{logs}"
+        )
 
     def restart_server(self) -> None:
-        """Перезапускает контейнер Xray-сервера, не трогая конфигурацию/клиентов."""
-        container = self._get_container()
-        if container is None:
-            raise XrayDockerError("Контейнер Xray не найден — сервер ещё не настроен")
         try:
-            container.restart(timeout=10)
-        except APIError as exc:
-            raise XrayDockerError(f"Не удалось перезапустить контейнер Xray: {exc}") from exc
-        self._wait_running(container)
+            host_exec.systemctl("restart", self._unit)
+        except host_exec.HostExecError as exc:
+            raise XrayError(f"Не удалось перезапустить Xray: {exc}") from exc
+        self._wait_running()
 
     def remove_server(self) -> None:
-        """Полностью удаляет контейнер Xray-сервера (для полного сброса VPN)."""
-        container = self._get_container()
-        if container is None:
-            return
+        host_exec.systemctl("disable", "--now", self._unit, check=False)
+        host_exec.remove_root_file(config.XRAY_SYSTEM_CONF_PATH)
         try:
-            container.remove(force=True)
-        except APIError as exc:
-            raise XrayDockerError(f"Не удалось удалить контейнер Xray: {exc}") from exc
+            self._firewall.ensure(wg_port=None, xray_port=None, wg_subnet=None)
+        except FirewallError as exc:
+            logger.warning("Не удалось обновить nftables после сброса Xray: %s", exc)

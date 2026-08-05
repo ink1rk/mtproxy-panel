@@ -68,15 +68,21 @@ logger = logging.getLogger(__name__)
 
 def _ensure_vpn_servers_running() -> None:
     """
-    Если WireGuard и/или Xray уже были настроены ранее — поднимает их
-    контейнеры при старте панели (например, после перезагрузки сервера).
-    Ошибки не должны мешать запуску самой панели, поэтому перехватываются
-    и только логируются.
+    Полностью автоматический старт (без ручных шагов в UI):
+      WireGuard — сервер + peer с QR
+      Xray      — сервер + VLESS-клиент с QR
+      MTProxy   — один прокси-контейнер, если ни одного ещё нет
+    Ошибки только логируются — панель должна стартовать в любом случае.
     """
     try:
         from vpn_service import VpnServiceError, WireGuardService
 
-        WireGuardService().ensure_running_if_configured()
+        peer = WireGuardService().ensure_ready()
+        if peer is not None:
+            logger.info(
+                "WireGuard готов: peer=%s ip=%s qr=%s",
+                peer.name, peer.allocated_ip, peer.qr_filename,
+            )
     except VpnServiceError as exc:
         logger.warning("WireGuard-сервер не удалось поднять при старте: %s", exc)
     except Exception:  # noqa: BLE001 — сбой VPN-автозапуска не должен ронять панель
@@ -85,11 +91,38 @@ def _ensure_vpn_servers_running() -> None:
     try:
         from vpn_service import VpnServiceError, XrayService
 
-        XrayService().ensure_running_if_configured()
+        client = XrayService().ensure_ready()
+        if client is not None:
+            logger.info("Xray готов: client=%s qr=%s", client.name, client.qr_filename)
     except VpnServiceError as exc:
         logger.warning("Xray-сервер не удалось поднять при старте: %s", exc)
     except Exception:  # noqa: BLE001
         logger.exception("Неожиданная ошибка при автозапуске Xray")
+
+    try:
+        import config
+        from service import ProxyService, ProxyServiceError
+
+        proxy_service = ProxyService()
+        if not proxy_service.list_proxies():
+            try:
+                # 443 — как у Telegram-рекомендаций и проверенного рабочего
+                # сервера: случайный высокий порт многие мобильные сети РФ
+                # режут ещё до TCP SYN, даже когда порт открыт снаружи.
+                proxy = proxy_service.create_proxy(desired_port=config.MTPROXY_DEFAULT_HOST_PORT)
+            except ProxyServiceError as exc:
+                logger.warning(
+                    "MTProxy на порту %s не удался (%s) — пробую случайный порт",
+                    config.MTPROXY_DEFAULT_HOST_PORT, exc,
+                )
+                proxy = proxy_service.create_proxy()
+            logger.info(
+                "MTProxy готов: container=%s port=%s", proxy.container_name, proxy.port,
+            )
+    except ProxyServiceError as exc:
+        logger.warning("MTProxy не удалось создать при старте: %s", exc)
+    except Exception:  # noqa: BLE001
+        logger.exception("Неожиданная ошибка при автосоздании MTProxy")
 
 
 @asynccontextmanager

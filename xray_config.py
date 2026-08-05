@@ -1,12 +1,8 @@
 """
-Генерация config.json для Xray (VLESS + REALITY + Vision) и vless://
-ссылок для клиентов. Чистые функции без побочных эффектов.
-
-Формат config.json подтверждён по официальным примерам XTLS/Xray-examples
-(VLESS-TCP-XTLS-Vision-REALITY) — используется ТОЛЬКО этот проверенный
-набор полей, без экспериментальных/недокументированных опций.
+Генерация config.json для Xray (VLESS + REALITY + Vision) и vless:// ссылок.
 """
 from __future__ import annotations
+
 from urllib.parse import quote
 
 import config
@@ -22,17 +18,21 @@ def render_server_config(
     clients: list[tuple[str, str]],
 ) -> dict:
     """
-    Строит полный config.json для Xray-сервера с текущим списком клиентов.
+    Полный config.json для Xray-сервера.
 
-    clients — список пар (client_uuid, name). Поле 'email' в клиенте Xray
-    используется ИМЕННО для идентификации в access-логах (Xray подписывает
-    строку лога значением email, если оно задано) — без него в логах видно
-    только факт подключения, но не то, какой именно клиент его сделал.
+    clients — список пар (client_uuid, name); email используется в access-логах.
+
+    Транспорт XHTTP (не голый TCP+Vision): данные идут отдельными
+    HTTP-запросами вместо одного хрупкого TCP-потока с TLS-in-TLS.
+    На нестабильных/мобильных сетях raw TCP+REALITY+Vision у части
+    пользователей стабильно давал "failed to read client hello" —
+    сервер был доказанно исправен (внешний тестовый клиент проходил
+    20/20), проблема именно в устойчивости сырого TCP-потока на
+    конкретном сетевом пути. XHTTP переживает потерю/повтор отдельных
+    HTTP-запросов гораздо лучше, чем один непрерывный TCP-поток —
+    именно для этого он и был добавлен в Xray-core.
     """
     return {
-        # "info" — чтобы в docker-логах контейнера было видно реальные соединения
-        # (accepted/dialing/domain) для просмотра в веб-логах панели; "warning"
-        # такие записи полностью скрывает (это уровень ошибок, не событий).
         "log": {"loglevel": "info"},
         "inbounds": [
             {
@@ -41,13 +41,14 @@ def render_server_config(
                 "protocol": "vless",
                 "settings": {
                     "clients": [
-                        {"id": client_uuid, "email": name, **({"flow": config.XRAY_FLOW} if config.XRAY_FLOW else {})}
+                        {"id": client_uuid, "email": name}
                         for client_uuid, name in clients
                     ],
                     "decryption": "none",
                 },
                 "streamSettings": {
-                    "network": "tcp",
+                    "network": "xhttp",
+                    "xhttpSettings": {"path": config.XRAY_XHTTP_PATH},
                     "security": "reality",
                     "realitySettings": {
                         "show": False,
@@ -56,6 +57,7 @@ def render_server_config(
                         "serverNames": server_names,
                         "privateKey": private_key,
                         "shortIds": [short_id],
+                        "minClientVer": config.XRAY_MIN_CLIENT_VER,
                     },
                 },
                 "sniffing": {
@@ -81,15 +83,12 @@ def build_vless_link(
     server_name: str,
     remark: str,
 ) -> str:
-    """
-    Строит vless:// ссылку для импорта клиентом (формат совместим
-    с v2rayNG, NekoBox, Shadowrocket и т.д.).
-    """
+    """vless:// ссылка для v2rayNG / NekoBox / Shadowrocket (транспорт XHTTP)."""
+    path_encoded = quote(config.XRAY_XHTTP_PATH, safe="")
     params = (
-        f"type=tcp&security=reality&pbk={public_key}&fp=chrome"
+        f"encryption=none&security=reality&pbk={public_key}&fp=chrome"
         f"&sni={server_name}&sid={short_id}"
+        f"&type=xhttp&path={path_encoded}&mode=auto"
     )
-    if config.XRAY_FLOW:
-        params += f"&flow={config.XRAY_FLOW}"
     remark_encoded = quote(remark, safe="")
     return f"vless://{client_uuid}@{server_ip}:{listen_port}?{params}#{remark_encoded}"

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 #
-# install.sh — полностью автоматическая установка MTProxy Control Panel
-# на Ubuntu Server. Устанавливает Docker и Python при отсутствии,
-# создаёт venv, ставит зависимости, запускает FastAPI и проверяет,
-# что сервис действительно отвечает.
+# install.sh — production-установка MTProxy Control Panel на Ubuntu Server.
+#
+# Стек:
+#   - FastAPI panel (systemd, root — нужен для wg/nft/xray)
+#   - WireGuard: native wg-quick@wg0 (PostUp как wg-easy + DOCKER-USER)
+#   - Xray: native binary + systemd xray.service
+#   - MTProxy: Docker (один контейнер на прокси)
+#   - Firewall: nftables input; WG-NAT через iptables PostUp
 #
 # Запуск: bash install.sh
 
@@ -167,17 +171,16 @@ ensure_python() {
 
     local py_minor_pkg="python3.$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo '')"
 
-    # Ставим и универсальные, и версионные пакеты (например python3.12-venv),
-    # т.к. на разных релизах Ubuntu имя пакета для venv отличается.
-    # apt-get install игнорирует не найденные версионные имена мягко только
-    # если явно допустить ошибку -- поэтому пробуем по отдельности.
+    # Универсальные пакеты обязательны. Версионные (python3.12-venv и т.п.)
+    # на Ubuntu 26.04/resolute часто отсутствуют — ставим best-effort.
     as_root apt-get install -y python3 python3-venv python3-pip
     if [[ -n "${py_minor_pkg}" && "${py_minor_pkg}" != "python3." ]]; then
         as_root apt-get install -y "${py_minor_pkg}-venv" 2>/dev/null || true
+        as_root apt-get install -y "${py_minor_pkg}-dev" 2>/dev/null || true
     fi
 
     if ! python3 -m venv --help >/dev/null 2>&1; then
-        fail "Не удалось установить рабочий модуль venv для python3. Установите вручную: apt install python3-venv (или python3.X-venv) и запустите install.sh снова."
+        fail "Не удалось установить рабочий модуль venv для python3. Установите вручную: apt install python3-venv и запустите install.sh снова."
     fi
 }
 
@@ -221,6 +224,143 @@ ensure_docker() {
     if ! as_root docker info >/dev/null 2>&1; then
         fail "Docker daemon не отвечает после установки/запуска."
     fi
+}
+
+ensure_mtproxy_image() {
+    # lscr.io/linuxserver/wireguard когда-то использовался для Docker WG —
+    # WireGuard теперь native (wg-quick), образ больше не нужен.
+    local image="telegrammessenger/proxy:latest"
+
+    if as_root docker image inspect "${image}" >/dev/null 2>&1; then
+        log "Docker-образ уже есть: ${image}"
+        return
+    fi
+
+    log "Скачиваю Docker-образ ${image}..."
+    local attempt
+    for attempt in 1 2 3; do
+        if as_root docker pull "${image}"; then
+            return
+        fi
+        log "Попытка ${attempt}/3 не удалась (вероятно, rate limit Docker Hub на этой сети) — жду и повторяю."
+        sleep $((attempt * 15))
+    done
+
+    # Не валим установку целиком: WireGuard/Xray/панель не зависят от этого
+    # образа. MTProxy просто не создастся автоматически при первом старте —
+    # панель залогирует предупреждение и повторит попытку при следующем
+    # заходе на /, когда rate limit снимется (обычно в течение часа).
+    log "ВНИМАНИЕ: не удалось скачать ${image} (Docker Hub rate limit?). " \
+        "Продолжаю установку без него — MTProxy настроится сам, когда " \
+        "образ станет доступен (перезапустите панель или подождите)."
+}
+
+remove_legacy_docker_vpn() {
+    # WG и Xray больше не в Docker — убираем старые контейнеры.
+    for name in wg_server xray_server; do
+        if as_root docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${name}"; then
+            log "Удаляю legacy Docker-контейнер ${name}."
+            as_root docker rm -f "${name}" >/dev/null 2>&1 || true
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Native VPN stack: wireguard-tools, nftables, xray binary
+# ---------------------------------------------------------------------------
+ensure_vpn_stack() {
+    log "Устанавливаю native VPN-стек (wireguard-tools, nftables, curl, unzip)."
+    as_root apt-get update -y
+    as_root apt-get install -y \
+        wireguard wireguard-tools \
+        nftables \
+        curl ca-certificates unzip \
+        iproute2 iptables
+    as_root apt-get install -y openresolv 2>/dev/null \
+        || as_root apt-get install -y resolvconf 2>/dev/null \
+        || true
+
+    if as_root modprobe wireguard 2>/dev/null; then
+        log "Модуль ядра wireguard загружен."
+    elif [[ -d /sys/module/wireguard ]]; then
+        log "Модуль ядра wireguard уже активен."
+    else
+        log "ВНИМАНИЕ: modprobe wireguard не удался — проверьте ядро (>= 5.6)."
+    fi
+
+    as_root sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    printf 'net.ipv4.ip_forward=1\n' | as_root tee /etc/sysctl.d/99-mtproxy-panel-forward.conf >/dev/null
+
+    as_root mkdir -p /etc/wireguard /usr/local/etc/xray /etc/nftables.d
+    as_root chmod 700 /etc/wireguard
+
+    # WireGuard — native wg-quick@wg0. Docker wg_server глушим.
+    as_root docker rm -f wg_server >/dev/null 2>&1 || true
+    if has_systemd; then
+        as_root systemctl enable mtproxy-wg-forward.service >/dev/null 2>&1 || true
+    fi
+
+    relax_wg_apparmor
+}
+
+# ---------------------------------------------------------------------------
+# AppArmor 'wg' / 'wg-quick' на Ubuntu 24.04+ мешает native WireGuard:
+#   - профиль допускает exec только xtables-nft-multi (легаси iptables → deny)
+#   - netlink-медиация иногда даёт RTNETLINK Permission denied на
+#     `ip link set mtu` внутри wg-quick//ip суб-профиля
+# Снимаем профили один раз при установке (идемпотентно). WireGuardManager
+# на всякий случай повторяет то же самое перед каждым ensure_server_running.
+# ---------------------------------------------------------------------------
+relax_wg_apparmor() {
+    if ! command -v apparmor_parser >/dev/null 2>&1; then
+        return
+    fi
+    log "Снимаю AppArmor-профили wg/wg-quick (ломают native WireGuard на Ubuntu)."
+    as_root mkdir -p /etc/apparmor.d/disable
+    local profile
+    for profile in wg wg-quick; do
+        if [[ -f "/etc/apparmor.d/${profile}" ]] && [[ ! -e "/etc/apparmor.d/disable/${profile}" ]]; then
+            as_root ln -sf "/etc/apparmor.d/${profile}" "/etc/apparmor.d/disable/${profile}"
+        fi
+        as_root apparmor_parser -R "/etc/apparmor.d/${profile}" >/dev/null 2>&1 || true
+    done
+
+    # nftables service + include наших правил
+    if has_systemd; then
+        as_root systemctl enable nftables >/dev/null 2>&1 || true
+        as_root systemctl start nftables >/dev/null 2>&1 || true
+    fi
+    if [[ -f /etc/nftables.conf ]] && ! grep -q 'mtproxy-panel.nft' /etc/nftables.conf 2>/dev/null; then
+        printf '\ninclude "/etc/nftables.d/mtproxy-panel.nft"\n' | as_root tee -a /etc/nftables.conf >/dev/null || true
+    fi
+
+    ensure_xray_binary
+}
+
+ensure_xray_binary() {
+    if [[ -x /usr/local/bin/xray ]]; then
+        log "Xray уже установлен: $(/usr/local/bin/xray version 2>/dev/null | head -1 || echo /usr/local/bin/xray)"
+        return
+    fi
+
+    log "Устанавливаю Xray-core (официальный install-release.sh)..."
+    local installer="/tmp/xray-install-release.sh"
+    if ! curl -fsSL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "${installer}"; then
+        fail "Не удалось скачать Xray install-release.sh с GitHub."
+    fi
+    if ! as_root bash "${installer}" install; then
+        fail "Установка Xray не удалась. Проверьте доступ к github.com."
+    fi
+    rm -f "${installer}"
+
+    if [[ ! -x /usr/local/bin/xray ]]; then
+        fail "После установки /usr/local/bin/xray не найден."
+    fi
+    # Останавливаем дефолтный unit до настройки из панели (пустой/чужой конфиг).
+    if has_systemd; then
+        as_root systemctl disable --now xray >/dev/null 2>&1 || true
+    fi
+    log "Xray установлен: $(/usr/local/bin/xray version 2>/dev/null | head -1)"
 }
 
 # ---------------------------------------------------------------------------
@@ -362,22 +502,26 @@ clear_python_bytecode_cache() {
 }
 
 install_systemd_unit() {
-    log "Устанавливаю systemd-юнит '${SYSTEMD_SERVICE_NAME}' (автозапуск при загрузке сервера, автоперезапуск при сбое)."
+    log "Устанавливаю systemd-юнит '${SYSTEMD_SERVICE_NAME}' (root: wg-quick/nft/xray)."
     local unit_content
     unit_content="$(cat <<EOF
 [Unit]
-Description=MTProxy Control Panel (FastAPI + uvicorn)
-After=network-online.target docker.service
+Description=MTProxy Control Panel (FastAPI + native WireGuard/Xray + Docker MTProxy)
+After=network-online.target docker.service nftables.service
 Wants=network-online.target docker.service
 
 [Service]
 Type=simple
+User=root
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${VENV_DIR}/bin/uvicorn main:app --host ${APP_HOST} --port ${APP_PORT}
 Restart=on-failure
 RestartSec=3
 StandardOutput=append:${APP_LOG}
 StandardError=append:${APP_LOG}
+# Нужны для управления native VPN и Docker MTProxy
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_MODULE
 
 [Install]
 WantedBy=multi-user.target
@@ -479,38 +623,89 @@ verify_docker_ps() {
 }
 
 # ---------------------------------------------------------------------------
-# 7. WireGuard: проверка поддержки ядром (best-effort, не фатально —
-#    контейнер WireGuard-сервера сам умеет подгрузить модуль благодаря
-#    capability SYS_MODULE, если ядро поддерживает WireGuard).
+# Firewall: ufw (если активен) + базовая nftables-таблица панели
 # ---------------------------------------------------------------------------
-ensure_wireguard_kernel_support() {
-    if as_root modprobe wireguard 2>/dev/null; then
-        log "Модуль ядра WireGuard доступен."
-    elif [[ -d /sys/module/wireguard ]]; then
-        log "Модуль ядра WireGuard уже загружен."
-    else
-        log "ВНИМАНИЕ: не удалось подтвердить поддержку WireGuard ядром хоста. " \
-            "Обычно это не проблема на Ubuntu Server (ядро >= 5.6 включает WireGuard " \
-            "изначально) — контейнер WireGuard-сервера попробует загрузить модуль сам " \
-            "при первом запуске из панели."
+ensure_firewall_allows_panel() {
+    if command -v ufw >/dev/null 2>&1 \
+        && as_root ufw status 2>/dev/null | grep -qi "Status: active"; then
+        log "Обнаружен активный ufw — открываю порты панели и VPN."
+        as_root ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+        as_root ufw allow 443/udp >/dev/null 2>&1 || true
+        as_root ufw allow 8443/tcp >/dev/null 2>&1 || true
+    fi
+
+    # Базовая nftables-таблица (панель). WG/Xray порты допишет панель при setup.
+    if command -v nft >/dev/null 2>&1; then
+        local rules
+        rules="$(cat <<EOF
+table inet mtproxy-panel {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    tcp dport ${APP_PORT} accept comment "mtproxy-panel"
+  }
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+  }
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+  }
+}
+EOF
+)"
+        as_root nft delete table inet mtproxy-panel >/dev/null 2>&1 || true
+        printf '%s\n' "${rules}" | as_root nft -f -
+        printf '%s\n' "${rules}" | as_root tee /etc/nftables.d/mtproxy-panel.nft >/dev/null
+        log "nftables таблица mtproxy-panel применена."
+    fi
+
+    # Docker ставит FORWARD DROP — юнит переприменит ACCEPT для wg0 при
+    # каждом рестарте Docker. Сразу не запускаем: venv ещё не создан на
+    # этом шаге install.sh — панель сама применит NAT при своём старте
+    # (WireGuardService.ensure_ready(), см. main.py).
+    install_wg_forward_helper
+}
+
+install_wg_forward_helper() {
+    # После рестарта Docker DOCKER-USER очищается — поднимаем правила снова.
+    # Вызывает venv-python (tools/wg_reapply_nat.py -> vpn_service ->
+    # firewall_manager.ensure_wg_nat_forward) — ни одной shell-строки,
+    # вся логика в коде панели.
+    local unit_path="/etc/systemd/system/mtproxy-wg-forward.service"
+    local unit_content
+    unit_content="$(cat <<EOF
+[Unit]
+Description=Allow WireGuard forwarding past Docker iptables DROP
+After=network-online.target docker.service nftables.service
+Wants=network-online.target
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${VENV_DIR}/bin/python ${SCRIPT_DIR}/tools/wg_reapply_nat.py
+
+[Install]
+WantedBy=multi-user.target docker.service
+EOF
+)"
+    if has_systemd; then
+        printf '%s\n' "${unit_content}" | as_root tee "${unit_path}" >/dev/null
+        as_root systemctl daemon-reload
+        as_root systemctl enable mtproxy-wg-forward.service >/dev/null 2>&1 || true
+        as_root systemctl start mtproxy-wg-forward.service >/dev/null 2>&1 || true
+        log "Установлен systemd helper mtproxy-wg-forward.service (Docker FORWARD bypass)."
     fi
 }
 
-# ---------------------------------------------------------------------------
-# 8. Firewall: открываем порт самой панели, если активен ufw. Порты,
-#    публикуемые Docker'ом (-p) для MTProxy/WireGuard/Xray контейнеров,
-#    ufw обычно не блокирует — Docker управляет своими iptables-правилами
-#    независимо от ufw, поэтому их отдельно открывать не требуется.
-# ---------------------------------------------------------------------------
-ensure_firewall_allows_panel() {
-    if ! command -v ufw >/dev/null 2>&1; then
-        return
+verify_vpn_binaries() {
+    local missing=()
+    command -v docker >/dev/null 2>&1 || missing+=("docker")
+    command -v nft >/dev/null 2>&1 || missing+=("nft")
+    [[ -x /usr/local/bin/xray ]] || missing+=("xray")
+    if (( ${#missing[@]} > 0 )); then
+        fail "Не найдены компоненты VPN-стека: ${missing[*]}"
     fi
-    if ! as_root ufw status 2>/dev/null | grep -qi "Status: active"; then
-        return
-    fi
-    log "Обнаружен активный ufw — открываю порт панели ${APP_PORT}/tcp."
-    as_root ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+    log "Проверка VPN-стека пройдена (docker, nft, xray)."
 }
 
 # ---------------------------------------------------------------------------
@@ -521,7 +716,9 @@ main() {
     ensure_repo_up_to_date
     ensure_python
     ensure_docker
-    ensure_wireguard_kernel_support
+    ensure_mtproxy_image
+    remove_legacy_docker_vpn
+    ensure_vpn_stack
     ensure_firewall_allows_panel
     ensure_project_structure
     ensure_venv
@@ -537,10 +734,14 @@ main() {
 
     verify_started_process_owns_port
     verify_docker_ps
+    verify_vpn_binaries
 
     log "==============================================================="
-    log " MTProxy Control Panel установлена и запущена."
+    log " MTProxy Control Panel (native VPN stack) установлена."
     log " Откройте в браузере: http://<IP_ЭТОГО_СЕРВЕРА>:${APP_PORT}/"
+    log " WireGuard: native wg-quick@wg0 (PostUp как wg-easy)"
+    log " VLESS:     systemd xray.service"
+    log " MTProxy:   Docker (telegrammessenger/proxy)"
     if grep -q "СОЗДАНА ПЕРВАЯ УЧЁТНАЯ ЗАПИСЬ" "${APP_LOG}" 2>/dev/null; then
         log " Учётные данные администратора (показываются один раз):"
         grep -A 3 "Логин:" "${APP_LOG}" | tail -n 3 | sed 's/^/   /'
@@ -549,19 +750,16 @@ main() {
     fi
     log " Логи приложения: ${APP_LOG}"
     if has_systemd; then
-        log " Панель установлена как systemd-сервис '${SYSTEMD_SERVICE_NAME}' и будет"
-        log " автоматически запускаться при перезагрузке сервера, а также сама"
-        log " перезапускаться при сбое."
-        log " Статус:          systemctl status ${SYSTEMD_SERVICE_NAME}"
-        log " Логи (journal):  journalctl -u ${SYSTEMD_SERVICE_NAME} -f"
+        log " Статус панели:   systemctl status ${SYSTEMD_SERVICE_NAME}"
+        log " Логи панели:     journalctl -u ${SYSTEMD_SERVICE_NAME} -f"
+        log " WireGuard:       docker exec wg_server wg show"
+        log " Xray:            systemctl status xray"
         log " Перезапуск:      systemctl restart ${SYSTEMD_SERVICE_NAME}"
-        log " Остановить:      systemctl stop ${SYSTEMD_SERVICE_NAME}"
     else
-        log " ВНИМАНИЕ: systemd не найден, панель запущена в фоне без автозапуска —"
-        log " после перезагрузки сервера потребуется вручную выполнить 'bash install.sh'."
+        log " ВНИМАНИЕ: systemd не найден — native VPN требует systemd."
         log " PID процесса:    $(cat "${PID_FILE}" 2>/dev/null || echo '?')"
-        log " Остановить:      kill \$(cat ${PID_FILE})"
     fi
+    log " Облачный firewall: откройте 443/udp (WireGuard), 8443/tcp (VLESS), ${APP_PORT}/tcp (панель)"
     log "==============================================================="
 }
 

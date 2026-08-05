@@ -1,6 +1,6 @@
 """
 Repository Pattern для VPN-подсистем: WireGuard и Xray/VLESS.
-Только CRUD, никакой бизнес-логики (генерация ключей, Docker-операции
+Только CRUD, никакой бизнес-логики (генерация ключей, systemd/nftables
 и т.д. находятся в vpn_service.py / wireguard_manager.py / xray_manager.py).
 """
 from __future__ import annotations
@@ -40,6 +40,7 @@ def _row_to_wg_server_config(row: sqlite3.Row) -> WireGuardServerConfig:
 
 
 def _row_to_wg_peer(row: sqlite3.Row) -> WireGuardPeer:
+    keys = set(row.keys())
     return WireGuardPeer(
         id=row["id"],
         name=row["name"],
@@ -49,6 +50,7 @@ def _row_to_wg_peer(row: sqlite3.Row) -> WireGuardPeer:
         config_text=row["config_text"],
         qr_filename=row["qr_filename"],
         created_at=row["created_at"],
+        preshared_key=(row["preshared_key"] if "preshared_key" in keys else "") or "",
     )
 
 
@@ -124,6 +126,7 @@ class WireGuardRepository:
         allocated_ip: str,
         config_text: str,
         qr_filename: str,
+        preshared_key: str = "",
     ) -> WireGuardPeer:
         created_at = datetime.now(timezone.utc).isoformat()
         try:
@@ -131,10 +134,14 @@ class WireGuardRepository:
                 cursor = connection.execute(
                     f"""
                     INSERT INTO {config.WG_PEERS_TABLE_NAME}
-                        (name, private_key, public_key, allocated_ip, config_text, qr_filename, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (name, private_key, public_key, preshared_key, allocated_ip,
+                         config_text, qr_filename, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (name, private_key, public_key, allocated_ip, config_text, qr_filename, created_at),
+                    (
+                        name, private_key, public_key, preshared_key, allocated_ip,
+                        config_text, qr_filename, created_at,
+                    ),
                 )
                 new_id = cursor.lastrowid
         except sqlite3.IntegrityError as exc:
@@ -143,8 +150,31 @@ class WireGuardRepository:
         return WireGuardPeer(
             id=new_id, name=name, private_key=private_key, public_key=public_key,
             allocated_ip=allocated_ip, config_text=config_text, qr_filename=qr_filename,
-            created_at=created_at,
+            created_at=created_at, preshared_key=preshared_key,
         )
+
+    def update_peer_config(
+        self,
+        peer_id: int,
+        *,
+        config_text: str,
+        preshared_key: str | None = None,
+    ) -> None:
+        with get_connection() as connection:
+            if preshared_key is None:
+                connection.execute(
+                    f"UPDATE {config.WG_PEERS_TABLE_NAME} SET config_text = ? WHERE id = ?",
+                    (config_text, peer_id),
+                )
+            else:
+                connection.execute(
+                    f"""
+                    UPDATE {config.WG_PEERS_TABLE_NAME}
+                    SET config_text = ?, preshared_key = ?
+                    WHERE id = ?
+                    """,
+                    (config_text, preshared_key, peer_id),
+                )
 
     def delete_peer(self, peer_id: int) -> WireGuardPeer:
         peer = self.get_peer_by_id(peer_id)
@@ -266,6 +296,13 @@ class XrayRepository:
             id=new_id, name=name, client_uuid=client_uuid,
             vless_link=vless_link, qr_filename=qr_filename, created_at=created_at,
         )
+
+    def update_client_link(self, client_id: int, *, vless_link: str) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                f"UPDATE {config.VLESS_CLIENTS_TABLE_NAME} SET vless_link = ? WHERE id = ?",
+                (vless_link, client_id),
+            )
 
     def delete_client(self, client_id: int) -> VlessClient:
         client = self.get_client_by_id(client_id)
