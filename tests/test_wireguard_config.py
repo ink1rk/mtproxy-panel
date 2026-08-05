@@ -34,9 +34,9 @@ class WireGuardConfigTests(unittest.TestCase):
                 )
             ],
         )
-        post_up_line = next(line for line in conf.splitlines() if line.startswith("PostUp"))
-        self.assertIn("FORWARD -i wg0", post_up_line)
-        self.assertNotIn("%i", post_up_line)
+        # PostUp живёт вне conf (AppArmor) — в файле его быть не должно
+        self.assertNotIn("PostUp", conf)
+        self.assertNotIn("%i", conf)
         self.assertIn("PresharedKey = PSKVALUE", conf)
         self.assertIn("AllowedIPs = 10.66.0.2/32", conf)
 

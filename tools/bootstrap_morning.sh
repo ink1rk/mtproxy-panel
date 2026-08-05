@@ -59,10 +59,27 @@ if not report.ok:
     raise SystemExit(1)
 PY
 
-echo "== 5. enable units =="
-systemctl enable mtproxy-panel wg-quick@wg0 2>/dev/null || true
+echo "== 5. enable units + NAT helper =="
+cat >/etc/systemd/system/mtproxy-wg-forward.service <<'EOF'
+[Unit]
+Description=MTProxy panel WireGuard NAT/FORWARD (AppArmor-safe)
+After=wg-quick@wg0.service network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=WG_SUBNET=10.8.0.0/24
+ExecStart=/root/mtproxy-panel/tools/fix_wg_forward.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable mtproxy-panel wg-quick@wg0 mtproxy-wg-forward.service 2>/dev/null || true
 systemctl restart mtproxy-panel
 sleep 2
+systemctl start mtproxy-wg-forward.service || true
 bash tools/fix_wg_forward.sh || true
 
 echo "== 6. selftest =="

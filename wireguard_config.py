@@ -65,18 +65,19 @@ def render_server_config(
     peers: list[PeerForConfig],
     wan_device: str | None = None,
 ) -> str:
+    """
+    Серверный conf без PostUp/PostDown.
+    На Ubuntu AppArmor ломает iptables в PostUp (если iptables→legacy);
+    NAT ставит WireGuardManager._ensure_nat вне профиля.
+    """
     _, prefix = _subnet_base_and_prefix(subnet)
-    device = wan_device or config.WG_DOCKER_WAN_IFACE
-    post_up = wg_easy_post_up(subnet=subnet, listen_port=listen_port, device=device)
-    post_down = wg_easy_post_down(subnet=subnet, listen_port=listen_port, device=device)
+    del wan_device  # reserved for callers / future
     lines = [
         "[Interface]",
         f"PrivateKey = {server_private_key}",
         f"Address = {server_tunnel_address(subnet)}/{prefix}",
         f"ListenPort = {listen_port}",
         f"MTU = {config.WG_CLIENT_MTU}",
-        f"PostUp = {post_up}",
-        f"PostDown = {post_down}",
         "",
     ]
     for peer in peers:

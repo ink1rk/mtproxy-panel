@@ -19,7 +19,6 @@ from pathlib import Path
 import config
 import host_exec
 from firewall_manager import detect_wan_interface
-from wireguard_config import wg_easy_post_down, wg_easy_post_up
 
 logger = logging.getLogger(__name__)
 
@@ -74,49 +73,19 @@ class WireGuardManager:
 
     def _augment_postup(self, conf_text: str, *, wan: str, listen_port: int, subnet: str) -> str:
         """
-        PostUp = DOCKER-USER bypass + FORWARD ACCEPT + wg-easy NAT.
-        DOCKER-USER критичен: Docker ставит DROP в FORWARD.
+        AppArmor profile `wg-quick` на Ubuntu разрешает только xtables-nft-multi /
+        nft. Если iptables → legacy, PostUp с iptables падает с Permission denied
+        и wg-quick откатывает интерфейс.
+
+        Поэтому PostUp/PostDown в conf пустые — NAT/FORWARD ставит `_ensure_nat`
+        из панели (unconfined).
         """
-        network_cidr = subnet if "/" in subnet else f"{subnet}/24"
-        post_up = (
-            "iptables -P FORWARD ACCEPT; "
-            "iptables -C DOCKER-USER -i wg0 -j ACCEPT 2>/dev/null || "
-            "iptables -I DOCKER-USER -i wg0 -j ACCEPT; "
-            "iptables -C DOCKER-USER -o wg0 -j ACCEPT 2>/dev/null || "
-            "iptables -I DOCKER-USER -o wg0 -j ACCEPT; "
-            + wg_easy_post_up(subnet=network_cidr, listen_port=listen_port, device=wan)
-        )
-        post_down = (
-            "iptables -D DOCKER-USER -i wg0 -j ACCEPT 2>/dev/null || true; "
-            "iptables -D DOCKER-USER -o wg0 -j ACCEPT 2>/dev/null || true; "
-            + wg_easy_post_down(subnet=network_cidr, listen_port=listen_port, device=wan)
-        )
+        del wan, listen_port, subnet  # NAT применяется отдельно
         lines: list[str] = []
-        replaced_up = replaced_down = False
         for line in conf_text.splitlines():
-            if line.startswith("PostUp ="):
-                lines.append(f"PostUp = {post_up}")
-                replaced_up = True
-            elif line.startswith("PostDown ="):
-                lines.append(f"PostDown = {post_down}")
-                replaced_down = True
-            else:
-                lines.append(line)
-        if not replaced_up:
-            # вставить после ListenPort/MTU
-            out: list[str] = []
-            inserted = False
-            for line in lines:
-                out.append(line)
-                if not inserted and (
-                    line.startswith("MTU =") or line.startswith("ListenPort =")
-                ):
-                    out.append(f"PostUp = {post_up}")
-                    out.append(f"PostDown = {post_down}")
-                    inserted = True
-            lines = out
-        elif not replaced_down:
-            lines.append(f"PostDown = {post_down}")
+            if line.startswith("PostUp =") or line.startswith("PostDown ="):
+                continue
+            lines.append(line)
         return "\n".join(lines).rstrip() + "\n"
 
     def write_config(self, conf_text: str, *, listen_port: int, subnet: str) -> None:
@@ -303,6 +272,26 @@ echo NAT_OK wan={wan}
             if not up.ok:
                 raise WireGuardError(f"restart failed: {up.output}")
         self.wait_until_interface_ready()
+        # NAT не в PostUp (AppArmor) — восстановить после рестарта iface
+        server_conf = self._system_conf()
+        subnet = config.WG_DEFAULT_SUBNET
+        listen_port = config.WG_DEFAULT_PORT
+        if server_conf.exists():
+            text = server_conf.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                if line.startswith("Address ="):
+                    # Address = 10.8.0.1/24 → 10.8.0.0/24
+                    addr = line.split("=", 1)[1].strip()
+                    ip_part, _, prefix = addr.partition("/")
+                    octets = ip_part.split(".")
+                    if len(octets) == 4:
+                        subnet = f"{octets[0]}.{octets[1]}.{octets[2]}.0/{prefix or '24'}"
+                elif line.startswith("ListenPort ="):
+                    try:
+                        listen_port = int(line.split("=", 1)[1].strip())
+                    except ValueError:
+                        pass
+        self._ensure_nat(subnet=subnet, listen_port=listen_port)
 
     def remove_server(self) -> None:
         host_exec.systemctl("disable", "--now", config.WG_SYSTEMD_UNIT, check=False)
