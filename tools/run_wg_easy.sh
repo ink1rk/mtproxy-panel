@@ -19,8 +19,12 @@ HASH="$(docker run --rm ghcr.io/wg-easy/wg-easy:14 wgpw "${PASSWORD}" \
   | sed -n "s/.*PASSWORD_HASH='\\(.*\\)'/\\1/p")"
 
 docker pull ghcr.io/wg-easy/wg-easy:14
+# host network: без docker-proxy UDP (на части VPS handshake есть, интернета нет)
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+sysctl -w net.ipv4.conf.all.src_valid_mark=1 >/dev/null || true
 docker run -d \
   --name=wg-easy \
+  --network host \
   -e LANG=en \
   -e "WG_HOST=${WG_HOST_IP}" \
   -e "PASSWORD_HASH=${HASH}" \
@@ -28,21 +32,22 @@ docker run -d \
   -e WG_PORT=51820 \
   -e WG_DEFAULT_ADDRESS=10.8.0.x \
   -e WG_DEFAULT_DNS=1.1.1.1 \
-  -e WG_MTU=1420 \
+  -e WG_MTU=1280 \
   -e WG_PERSISTENT_KEEPALIVE=25 \
   -e WG_ALLOWED_IPS=0.0.0.0/0 \
   -e WG_DEVICE=eth0 \
   -v "${DATA_DIR}:/etc/wireguard" \
   -v /lib/modules:/lib/modules:ro \
-  -p 51820:51820/udp \
-  -p 51821:51821/tcp \
   --cap-add=NET_ADMIN \
   --cap-add=SYS_MODULE \
   --device /dev/net/tun:/dev/net/tun \
-  --sysctl=net.ipv4.conf.all.src_valid_mark=1 \
-  --sysctl=net.ipv4.ip_forward=1 \
   --restart unless-stopped \
   ghcr.io/wg-easy/wg-easy:14
+iptables -P FORWARD ACCEPT 2>/dev/null || true
+iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE 2>/dev/null \
+  || iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT
+iptables -C FORWARD -o wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -o wg0 -j ACCEPT
 
 # панель не должна перехватывать :51820
 mkdir -p /etc/systemd/system/mtproxy-panel.service.d
